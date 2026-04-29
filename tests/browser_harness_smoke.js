@@ -156,7 +156,7 @@ function visibleHarnessRowsScript() {
 
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 2 条，下次搜索时隐藏"),
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 2 条"),
       null,
       { timeout: 30000 }
     );
@@ -172,10 +172,21 @@ function visibleHarnessRowsScript() {
         `expected virtual row reuse to preserve the originally selected Digital Carnage release, got ${JSON.stringify(lastHideRequest)}`
       );
     }
+    await page.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll("#results [role='gridcell']")).filter(
+          (element) => {
+            const style = window.getComputedStyle(element);
+            return style.display !== "none" && style.visibility !== "hidden";
+          }
+        ).length === 3,
+      null,
+      { timeout: 30000 }
+    );
     const afterHideVisible = await page.evaluate(visibleHarnessRowsScript);
-    if (afterHideVisible !== beforeVisible) {
+    if (afterHideVisible !== 3) {
       throw new Error(
-        `expected hide selected to keep current rows until the next search, got ${afterHideVisible}`
+        `expected hide selected to remove current rows without a new search, got ${afterHideVisible}`
       );
     }
 
@@ -229,7 +240,7 @@ function visibleHarnessRowsScript() {
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForTimeout(1000);
     const statusAfterSelectAllHide = await page.locator(".powerarr-plus-status").textContent();
-    if (!/已隐藏 [1-9]\d* 条，下次搜索时隐藏/.test(statusAfterSelectAllHide || "")) {
+    if (!/已隐藏 [1-9]\d* 条/.test(statusAfterSelectAllHide || "")) {
       throw new Error(`expected select-all hide to succeed, got status=${statusAfterSelectAllHide}`);
     }
     const selectAllHideRequest = await page.evaluate(() => {

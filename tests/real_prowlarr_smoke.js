@@ -151,6 +151,7 @@ function firstSelectableResultScript() {
   const title = (link?.innerText || link?.textContent || row.innerText || "").trim();
   return {
     index: allRows.indexOf(row),
+    checkboxName: checkbox.name || "",
     title,
     text: (row.innerText || row.textContent || "").trim(),
   };
@@ -467,11 +468,19 @@ async function runSearch(page) {
     const searchRequestsBeforeHide = searchRequestCount(requests);
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
-      () => /已隐藏 [1-9]\d* 条，下次搜索时隐藏/.test(
+      () => /已隐藏 [1-9]\d* 条/.test(
         document.querySelector(".powerarr-plus-status")?.textContent || ""
       ),
       null,
       { timeout: 90000 }
+    );
+    await page.waitForFunction(
+      (checkboxName) =>
+        !Array.from(document.querySelectorAll('input[type="checkbox"]')).some(
+          (input) => input.name === checkboxName && Boolean(input.offsetParent)
+        ),
+      secondSelected.checkboxName,
+      { timeout: 30000 }
     );
 
     const searchRequestsAfterHide = searchRequestCount(requests);

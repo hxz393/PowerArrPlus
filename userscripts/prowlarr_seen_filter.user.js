@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.22
+// @version      0.1.23
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -41,6 +41,7 @@
     nativeSelectionInterceptorInstalled: false,
     lastNativeSelectionKey: "",
     lastNativeSelectionAt: 0,
+    searchReplay: null,
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -136,6 +137,30 @@
     };
   }
 
+  function jsonSearchResponse(releases, status = 200, statusText = "OK") {
+    return new Response(JSON.stringify(releases || []), {
+      status,
+      statusText,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    });
+  }
+
+  function consumeSearchReplay() {
+    const replay = state.searchReplay;
+    if (!replay) {
+      return null;
+    }
+    if (Date.now() > replay.expiresAt) {
+      state.searchReplay = null;
+      return null;
+    }
+
+    state.searchReplay = null;
+    return jsonSearchResponse(replay.visible);
+  }
+
   function installFetchHook() {
     if (!window.fetch || window.fetch.__powerArrPlusSeenFilterInstalled) {
       return;
@@ -143,6 +168,13 @@
 
     const nativeFetch = window.fetch.bind(window);
     const wrappedFetch = async function (input, init) {
+      if (isGetRequest(input, init) && isSearchUrl(input)) {
+        const replayResponse = consumeSearchReplay();
+        if (replayResponse) {
+          return replayResponse;
+        }
+      }
+
       const response = await nativeFetch(input, init);
       if (!response || !response.ok || !isGetRequest(input, init) || !isSearchUrl(input)) {
         return response;
@@ -1075,7 +1107,7 @@
 
   function scheduleInjectCheckboxes() {
     window.clearTimeout(state.injectTimer);
-    state.injectTimer = window.setTimeout(injectCheckboxes, 250);
+    state.injectTimer = window.setTimeout(injectCheckboxes, 50);
   }
 
   function expandFingerprintsWithDuplicates(fingerprints) {
@@ -1100,6 +1132,96 @@
     return Array.from(expanded);
   }
 
+  function rebuildReleaseIndex() {
+    state.releaseByFingerprint = new Map();
+    for (const release of state.lastAllVisible) {
+      if (release && release._seenFilterFingerprint) {
+        state.releaseByFingerprint.set(release._seenFilterFingerprint, release);
+      }
+    }
+  }
+
+  function removeFingerprintsFromCurrentResults(fingerprints, hiddenCount) {
+    const hidden = new Set(fingerprints.filter(Boolean));
+    if (!hidden.size || !state.lastAllVisible.length) {
+      return 0;
+    }
+
+    const beforeVisible = state.lastVisible.length;
+    state.lastAllVisible = state.lastAllVisible.filter((release) => {
+      const fingerprint = release && release._seenFilterFingerprint;
+      return !fingerprint || !hidden.has(fingerprint);
+    });
+
+    rebuildReleaseIndex();
+    const deduped = dedupeReleases(state.lastAllVisible);
+    rowReleaseByFingerprint.clear();
+    state.lastVisible = deduped.visible;
+    state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
+    state.lastDedupeHiddenCount = deduped.hidden.length;
+    state.lastHiddenCount += hiddenCount || hidden.size;
+    return Math.max(0, beforeVisible - state.lastVisible.length);
+  }
+
+  function armCurrentSearchReplay() {
+    state.searchReplay = {
+      visible: state.lastVisible.slice(),
+      expiresAt: Date.now() + 3000,
+    };
+  }
+
+  function queryInputElement() {
+    return document.querySelector('input[name="searchQuery"], #query');
+  }
+
+  function dispatchEnterSearch(input) {
+    if (!(input instanceof HTMLElement)) {
+      return;
+    }
+
+    input.focus();
+    ["keydown", "keypress", "keyup"].forEach((type) => {
+      input.dispatchEvent(
+        new KeyboardEvent(type, {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    });
+  }
+
+  function searchRefreshButton() {
+    return (
+      document.querySelector("#searchButton") ||
+      document.querySelector('button[class*="SearchFooter-searchButton"]')
+    );
+  }
+
+  function refreshCurrentSearchFromReplay() {
+    armCurrentSearchReplay();
+    dispatchEnterSearch(queryInputElement());
+
+    window.setTimeout(() => {
+      if (!state.searchReplay) {
+        return;
+      }
+
+      const button = searchRefreshButton();
+      if (button instanceof HTMLElement && !button.disabled) {
+        button.click();
+      }
+    }, 80);
+
+    window.setTimeout(() => {
+      if (state.searchReplay) {
+        state.searchReplay = null;
+        scheduleInjectCheckboxes();
+      }
+    }, 3000);
+  }
+
   async function hideFingerprints(fingerprints) {
     if (!fingerprints.length) {
       updateStatus("没有选中结果");
@@ -1121,10 +1243,12 @@
     }
 
     const result = await servicePost("/api/hide", { releases });
+    const hiddenCount = result.hiddenCount || releases.length;
     for (const fingerprint of expandedFingerprints) {
       state.selected.delete(fingerprint);
       state.currentPageActionHiddenFingerprints.add(fingerprint);
     }
+    removeFingerprintsFromCurrentResults(expandedFingerprints, hiddenCount);
     state.selected.clear();
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
@@ -1133,7 +1257,8 @@
       checkbox.checked = false;
     });
     syncNativeSelectionControls();
-    const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
+    refreshCurrentSearchFromReplay();
+    const message = `已隐藏 ${hiddenCount} 条，已从当前结果移除`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
     window.setTimeout(() => updateStatus(message), 100);
@@ -1175,6 +1300,8 @@
     const message = `已取消本页已隐藏 ${unhidden} 条，下次搜索时显示`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
+    window.setTimeout(() => updateStatus(message), 100);
+    window.setTimeout(() => updateStatus(message), 250);
   }
 
   function currentVisibleFingerprints() {
