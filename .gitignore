@@ -8,8 +8,8 @@ __pycache__/
 dist/
 build/
 output/
+.playwright-cli/
 logs/
 *.log
 .env
 *.env
-

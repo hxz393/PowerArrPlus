@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.7
+// @version      0.1.9
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -202,6 +202,34 @@
     });
   }
 
+  function resultRowForElement(element) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    return element.closest("tr, [role='row'], [role='gridcell'], div[class*='row'], div[class*='Row']");
+  }
+
+  function releaseMatchScore(rowText, release) {
+    const title = comparableText(release.title || release.sortTitle);
+    if (!title || !rowText.includes(title)) {
+      return 0;
+    }
+
+    let score = title.length;
+    const indexer = comparableText(release.indexer);
+    if (indexer && rowText.includes(indexer)) {
+      score += 1000 + indexer.length;
+    }
+
+    const protocol = comparableText(release.protocol);
+    if (protocol && rowText.includes(protocol)) {
+      score += 50;
+    }
+
+    return score;
+  }
+
   function allResultRows() {
     return Array.from(
       document.querySelectorAll("tr, [role='row'], div[class*='row'], div[class*='Row']")
@@ -231,7 +259,7 @@
   function findReleaseForRow(row, used) {
     const rowText = comparableText(row.innerText || row.textContent || "");
     let best = null;
-    let bestLength = 0;
+    let bestScore = 0;
 
     for (const release of state.lastVisible) {
       const fingerprint = release._seenFilterFingerprint;
@@ -239,14 +267,119 @@
         continue;
       }
 
-      const title = comparableText(release.title || release.sortTitle);
-      if (title && rowText.includes(title) && title.length > bestLength) {
+      const score = releaseMatchScore(rowText, release);
+      if (score > bestScore) {
         best = release;
-        bestLength = title.length;
+        bestScore = score;
       }
     }
 
     return best;
+  }
+
+  function syncResultRows() {
+    const used = new Set();
+    for (const row of rowCandidates()) {
+      const existingFingerprint = row.dataset.powerarrPlusFingerprint;
+      if (existingFingerprint) {
+        used.add(existingFingerprint);
+        continue;
+      }
+
+      const release = findReleaseForRow(row, used);
+      if (!release || !release._seenFilterFingerprint) {
+        continue;
+      }
+
+      const fingerprint = release._seenFilterFingerprint;
+      used.add(fingerprint);
+      row.dataset.powerarrPlusFingerprint = fingerprint;
+      rowReleaseByFingerprint.set(fingerprint, release);
+      row.classList.add("powerarr-plus-row");
+    }
+  }
+
+  function releaseRowForNativeCheckbox(checkbox) {
+    let row = resultRowForElement(checkbox);
+    while (row instanceof HTMLElement) {
+      if (row.closest(".powerarr-plus-toolbar")) {
+        return null;
+      }
+
+      if (row.dataset.powerarrPlusFingerprint) {
+        return row;
+      }
+
+      row = row.parentElement ? resultRowForElement(row.parentElement) : null;
+    }
+
+    return null;
+  }
+
+  function nativeSelectionFingerprints() {
+    const fingerprints = new Set();
+    const used = new Set();
+
+    document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement)) {
+        return;
+      }
+      if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+        return;
+      }
+
+      const row = releaseRowForNativeCheckbox(checkbox);
+      if (!(row instanceof HTMLElement)) {
+        return;
+      }
+
+      let fingerprint = row.dataset.powerarrPlusFingerprint;
+      if (!fingerprint) {
+        const release = findReleaseForRow(row, used);
+        fingerprint = release && release._seenFilterFingerprint;
+      }
+
+      if (fingerprint) {
+        used.add(fingerprint);
+        fingerprints.add(fingerprint);
+      }
+    });
+
+    return Array.from(fingerprints);
+  }
+
+  function bindNativeSelectionControls() {
+    document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement)) {
+        return;
+      }
+      if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+        return;
+      }
+      if (!releaseRowForNativeCheckbox(checkbox)) {
+        return;
+      }
+      if (checkbox.dataset.powerarrPlusNativeBound === "1") {
+        return;
+      }
+
+      checkbox.dataset.powerarrPlusNativeBound = "1";
+      checkbox.addEventListener("change", () => {
+        window.setTimeout(updateStatus, 0);
+      });
+    });
+  }
+
+  function hasNativeSelectionControls() {
+    return Array.from(document.querySelectorAll('input[type="checkbox"]')).some((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement)) {
+        return false;
+      }
+      if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+        return false;
+      }
+      return Boolean(releaseRowForNativeCheckbox(checkbox));
+    });
   }
 
   function injectCell(row, checkbox) {
@@ -316,6 +449,13 @@
 
   function injectCheckboxes() {
     if (!state.lastVisible.length) {
+      return;
+    }
+
+    syncResultRows();
+    bindNativeSelectionControls();
+    if (hasNativeSelectionControls()) {
+      updateStatus();
       return;
     }
 
@@ -416,6 +556,8 @@
 
   function checkedFingerprints() {
     const fingerprints = new Set(state.selected);
+    nativeSelectionFingerprints().forEach((fingerprint) => fingerprints.add(fingerprint));
+
     document.querySelectorAll(".powerarr-plus-checkbox").forEach((checkbox) => {
       if (!checkbox || checkbox.checked !== true) {
         return;
@@ -664,7 +806,7 @@
   }
 
   installFetchHook();
-  if (window.localStorage.getItem("powerarrPlusEnableXhrObserver") === "1") {
+  if (window.localStorage.getItem("powerarrPlusDisableXhrObserver") !== "1") {
     installXhrObserver();
   }
 

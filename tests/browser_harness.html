@@ -6,6 +6,8 @@
     <style>
       body {
         margin: 0;
+        background: #f1f5f9;
+        color: #1f2937;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       header {
@@ -13,23 +15,116 @@
         align-items: center;
         justify-content: flex-end;
         gap: 16px;
-        height: 54px;
-        padding: 0 18px;
-        border-bottom: 1px solid #d1d5db;
+        height: 60px;
+        padding: 0 22px;
+        background: #ef5b00;
+        color: #fff;
+      }
+      header a {
+        color: #fff;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 210px 1fr;
+        min-height: calc(100vh - 60px);
+      }
+      aside {
+        background: #555;
+        color: #fff;
+        padding: 20px 28px;
       }
       main {
-        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        padding: 24px 20px;
+      }
+      .tableWrap {
+        overflow: auto;
+        max-height: 610px;
       }
       table {
         width: 100%;
+        min-width: 850px;
         border-collapse: collapse;
-        margin-top: 18px;
+        background: #f8fafc;
       }
       th,
       td {
-        padding: 8px 10px;
+        height: 36px;
+        padding: 0 10px;
         border-bottom: 1px solid #e5e7eb;
         text-align: left;
+        white-space: nowrap;
+      }
+      th {
+        color: #374151;
+        font-weight: 700;
+      }
+      td a {
+        color: #3b82f6;
+        text-decoration: none;
+      }
+      .selectCell {
+        width: 36px;
+        text-align: center;
+      }
+      .protocol {
+        display: inline-flex;
+        padding: 2px 5px;
+        border-radius: 3px;
+        background: #06b6d4;
+        color: #fff;
+        font-size: 12px;
+      }
+      .category {
+        display: inline-flex;
+        margin-right: 4px;
+        padding: 2px 5px;
+        border-radius: 2px;
+        background: #666;
+        color: #fff;
+        font-size: 12px;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: 240px 260px 1fr auto auto;
+        align-items: end;
+        gap: 20px;
+        margin-top: auto;
+        padding-top: 24px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        font-weight: 700;
+      }
+      input[type="text"],
+      select {
+        height: 32px;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        padding: 0 10px;
+        background: #fff;
+      }
+      button {
+        height: 36px;
+        border: 0;
+        border-radius: 4px;
+        padding: 0 16px;
+        background: #3b82f6;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.55;
+      }
+      #grabButton {
+        background: #22c55e;
+      }
+      #resultCount {
+        text-align: right;
+        font-weight: 700;
       }
     </style>
   </head>
@@ -38,73 +133,290 @@
       <strong>Prowlarr Harness</strong>
       <a href="https://prowlarr.com/donate">Donate</a>
     </header>
-    <main>
-      <button id="searchButton" type="button">搜索</button>
-      <table>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Indexer</th>
-            <th>Size</th>
-          </tr>
-        </thead>
-        <tbody id="results"></tbody>
-      </table>
-    </main>
+    <div class="layout">
+      <aside>搜索</aside>
+      <main>
+        <div class="tableWrap">
+          <table aria-label="Search results">
+            <thead>
+              <tr>
+                <th class="selectCell"><input id="selectAll" type="checkbox" aria-label="全选"></th>
+                <th>协议</th>
+                <th>寿命</th>
+                <th>标题</th>
+                <th>索引器</th>
+                <th>大小</th>
+                <th>抓取</th>
+                <th>用户</th>
+                <th>分类</th>
+              </tr>
+            </thead>
+            <tbody id="results"></tbody>
+          </table>
+        </div>
+        <div class="controls">
+          <label>
+            查询字段
+            <input id="query" type="text" value="Vaxxed.From.Cover-Up.to.Catastrophe.2016">
+          </label>
+          <label>
+            索引器
+            <select>
+              <option>所有索引器</option>
+              <option>Digital Carnage</option>
+            </select>
+          </label>
+          <div></div>
+          <div id="resultCount">等待搜索</div>
+          <button id="grabButton" type="button" disabled>抓取资源</button>
+          <button id="searchButton" type="button">搜索</button>
+        </div>
+      </main>
+    </div>
     <script>
+      window.localStorage.setItem("powerarrPlusServiceOrigin", window.location.origin);
+
+      const sampleReleases = [
+        {
+          guid: "harness-mark-kranjcec",
+          indexerId: 41,
+          indexer: "SceneNZBs",
+          title: "Mark Kranjcec-A Call for Truth (From \"Vaxxed From Cover-up to Catastrophe\")-16BIT-44-KHZ-WEB-FLAC-2016-WALKMAN",
+          sortTitle: "Mark Kranjcec-A Call for Truth (From \"Vaxxed From Cover-up to Catastrophe\")-16BIT-44-KHZ-WEB-FLAC-2016-WALKMAN",
+          age: 199,
+          size: 29674700,
+          grabs: 0,
+          protocol: "nzb",
+          categories: [{ name: "Audio/Lossless" }]
+        },
+        {
+          guid: "harness-digital-carnage-dvdrip",
+          indexerId: 1,
+          indexer: "Digital Carnage",
+          title: "Vaxxed.From.Cover.Up.To.Catastrophe.2016.LiMiTED.DVDRip.x264-LPD",
+          sortTitle: "Vaxxed.From.Cover.Up.To.Catastrophe.2016.LiMiTED.DVDRip.x264-LPD",
+          age: 543,
+          size: 856791449,
+          grabs: 1,
+          protocol: "nzb",
+          categories: [{ name: "Movies" }, { name: "Movies/SD" }]
+        },
+        {
+          guid: "harness-scenenzbs-sigma",
+          indexerId: 41,
+          indexer: "SceneNZBs",
+          title: "Vaxxed.From.Cover-Up.to.Catastrophe.2016.1080p.AMZN.WEBRip.DDP2.0.x264-SiGMA",
+          sortTitle: "Vaxxed.From.Cover-Up.to.Catastrophe.2016.1080p.AMZN.WEBRip.DDP2.0.x264-SiGMA",
+          age: 582,
+          size: 5046586572,
+          grabs: 0,
+          protocol: "nzb",
+          categories: [{ name: "Movies/HD" }]
+        },
+        {
+          guid: "harness-nzbgeek-handjob",
+          indexerId: 12,
+          indexer: "NZBgeek",
+          title: "Vaxxed.From.Cover-Up.to.Catastrophe.2016.BluRay.720p.x264.AC3.HANDJOB",
+          sortTitle: "Vaxxed.From.Cover-Up.to.Catastrophe.2016.BluRay.720p.x264.AC3.HANDJOB",
+          age: 1006,
+          size: 4187593114,
+          grabs: 38,
+          protocol: "nzb",
+          categories: [{ name: "Movies" }, { name: "Movies/BluRay" }]
+        }
+      ];
+
+      const hiddenFingerprints = new Set();
+
+      function fingerprintRelease(release) {
+        return `harness:${release.indexerId || ""}:${release.guid || release.title || ""}`;
+      }
+
+      class HarnessXMLHttpRequest {
+        constructor() {
+          this.status = 0;
+          this.readyState = 0;
+          this.response = "";
+          this.responseText = "";
+          this.responseType = "";
+          this._listeners = {};
+        }
+
+        open(method, url) {
+          this._method = method;
+          this._url = url;
+          this.readyState = 1;
+        }
+
+        send() {
+          const url = new URL(this._url || "", window.location.href);
+          if (!url.pathname.endsWith("/api/v1/search")) {
+            throw new Error(`Unhandled harness XHR: ${url.href}`);
+          }
+
+          window.setTimeout(() => {
+            this.status = 200;
+            this.readyState = 4;
+            this.responseText = JSON.stringify(sampleReleases);
+            this.response = this.responseText;
+            this.dispatchEvent(new Event("load"));
+            this.dispatchEvent(new Event("loadend"));
+          }, 0);
+        }
+
+        setRequestHeader() {}
+
+        getAllResponseHeaders() {
+          return "content-type: application/json; charset=utf-8\r\n";
+        }
+
+        addEventListener(type, listener) {
+          this._listeners[type] = this._listeners[type] || [];
+          this._listeners[type].push(listener);
+        }
+
+        removeEventListener(type, listener) {
+          this._listeners[type] = (this._listeners[type] || []).filter(
+            (item) => item !== listener
+          );
+        }
+
+        dispatchEvent(event) {
+          (this._listeners[event.type] || []).forEach((listener) => {
+            listener.call(this, event);
+          });
+          const handler = this[`on${event.type}`];
+          if (typeof handler === "function") {
+            handler.call(this, event);
+          }
+          return true;
+        }
+      }
+
+      window.XMLHttpRequest = HarnessXMLHttpRequest;
+
       const nativeFetchForHarness = window.fetch.bind(window);
-      window.fetch = function(input, init) {
+      window.fetch = async function(input, init) {
         const raw = typeof input === "string" ? input : input && input.url;
         const url = new URL(raw || "", window.location.href);
         if (url.pathname.endsWith("/api/v1/search")) {
           return Promise.resolve(
-            new Response(
-              JSON.stringify([
-                {
-                  guid: "powerarr-plus-browser-smoke-1",
-                  indexerId: 51,
-                  indexer: "Harness",
-                  title: "PowerArrPlus Browser Smoke 1",
-                  sortTitle: "PowerArrPlus Browser Smoke 1",
-                  size: 123456789,
-                  protocol: "torrent"
-                },
-                {
-                  guid: "powerarr-plus-browser-smoke-2",
-                  indexerId: 51,
-                  indexer: "Harness",
-                  title: "PowerArrPlus Browser Smoke 2",
-                  sortTitle: "PowerArrPlus Browser Smoke 2",
-                  size: 987654321,
-                  protocol: "torrent"
-                }
-              ]),
-              { headers: { "Content-Type": "application/json; charset=utf-8" } }
-            )
+            new Response(JSON.stringify(sampleReleases), {
+              headers: { "Content-Type": "application/json; charset=utf-8" }
+            })
+          );
+        }
+        if (url.pathname === "/api/filter") {
+          const payload = JSON.parse((init && init.body) || "{}");
+          const releases = (payload.releases || []).map((release) => ({
+            ...release,
+            _seenFilterFingerprint: fingerprintRelease(release)
+          }));
+          const hidden = releases.filter((release) =>
+            hiddenFingerprints.has(release._seenFilterFingerprint)
+          );
+          const visible = releases.filter((release) =>
+            !hiddenFingerprints.has(release._seenFilterFingerprint)
+          );
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              total: releases.length,
+              visible,
+              hidden,
+              hiddenCount: hidden.length
+            }),
+            { headers: { "Content-Type": "application/json; charset=utf-8" } }
+          );
+        }
+        if (url.pathname === "/api/hide") {
+          const payload = JSON.parse((init && init.body) || "{}");
+          const releases = payload.releases || [];
+          releases.forEach((release) => {
+            hiddenFingerprints.add(release._seenFilterFingerprint || fingerprintRelease(release));
+          });
+          return new Response(
+            JSON.stringify({ ok: true, hiddenCount: releases.length }),
+            { headers: { "Content-Type": "application/json; charset=utf-8" } }
           );
         }
 
         return nativeFetchForHarness(input, init);
       };
 
+      function formatBytes(size) {
+        if (size >= 1024 * 1024 * 1024) {
+          return `${(size / 1024 / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} GiB`;
+        }
+        return `${(size / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} MiB`;
+      }
+
       function renderRows(releases) {
         const results = document.getElementById("results");
         results.replaceChildren();
         for (const release of releases) {
           const row = document.createElement("tr");
-          for (const value of [release.title, release.indexer, release.size]) {
+          const selectCell = document.createElement("td");
+          selectCell.className = "selectCell";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.setAttribute("aria-label", `选择 ${release.title}`);
+          selectCell.appendChild(checkbox);
+          row.appendChild(selectCell);
+
+          const values = [
+            `<span class="protocol">${release.protocol}</span>`,
+            `${release.age} days`,
+            `<a href="#">${release.title}</a>`,
+            release.indexer,
+            formatBytes(release.size),
+            String(release.grabs || 0),
+            "",
+            release.categories.map((category) => `<span class="category">${category.name}</span>`).join("")
+          ];
+
+          for (const value of values) {
             const cell = document.createElement("td");
-            cell.textContent = value;
+            cell.innerHTML = value;
             row.appendChild(cell);
           }
           results.appendChild(row);
         }
+        updateGrabState();
+        document.getElementById("resultCount").textContent = `找到${releases.length}版本`;
       }
 
+      function updateGrabState() {
+        const checked = document.querySelectorAll('#results input[type="checkbox"]:checked').length;
+        document.getElementById("grabButton").disabled = checked === 0;
+      }
+
+      document.getElementById("selectAll").addEventListener("change", (event) => {
+        document.querySelectorAll('#results input[type="checkbox"]').forEach((checkbox) => {
+          checkbox.checked = event.target.checked;
+          checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        updateGrabState();
+      });
+
+      document.getElementById("results").addEventListener("change", updateGrabState);
+
       document.getElementById("searchButton").addEventListener("click", async () => {
-        const releases = await fetch("/api/v1/search?q=smoke").then((response) =>
-          response.json()
-        );
+        const query = encodeURIComponent(document.getElementById("query").value);
+        const releases = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", `/api/v1/search?query=${query}`);
+          xhr.onload = () => {
+            try {
+              resolve(JSON.parse(xhr.responseText || "[]"));
+            } catch (error) {
+              reject(error);
+            }
+          };
+          xhr.onerror = () => reject(new Error("search XHR failed"));
+          xhr.send();
+        });
         renderRows(releases);
       });
     </script>
