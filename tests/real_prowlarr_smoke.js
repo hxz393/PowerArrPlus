@@ -52,6 +52,48 @@ function dedupeCountFromStatus(text) {
   return match ? Number(match[1]) : 0;
 }
 
+function virtualRowGapStatsScript() {
+  const rows = Array.from(document.querySelectorAll("[role='gridcell']"))
+    .filter((element) => {
+      if (element.closest(".powerarr-plus-toolbar")) {
+        return false;
+      }
+      const style = window.getComputedStyle(element);
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.position === "absolute"
+      );
+    })
+    .map((element) => {
+      const style = window.getComputedStyle(element);
+      return {
+        top: Number.parseFloat(element.style.top || style.top || "0"),
+        height: Number.parseFloat(element.style.height || style.height || "0"),
+      };
+    })
+    .filter((row) => Number.isFinite(row.top) && Number.isFinite(row.height));
+
+  rows.sort((left, right) => left.top - right.top);
+  const rowHeight = rows.find((row) => row.height > 0)?.height || 38;
+  const gaps = [];
+  for (let index = 1; index < rows.length; index += 1) {
+    gaps.push(rows[index].top - rows[index - 1].top - rowHeight);
+  }
+
+  return {
+    count: rows.length,
+    maxGap: gaps.length ? Math.max(...gaps) : 0,
+    tops: rows.slice(0, 12).map((row) => row.top),
+  };
+}
+
+function assertNoVirtualRowGaps(stats, label) {
+  if (stats.count > 1 && stats.maxGap > 1) {
+    throw new Error(`${label} still has virtual row gaps: ${JSON.stringify(stats)}`);
+  }
+}
+
 async function runSearch(page) {
   const queryInput = page.locator('input[name="searchQuery"]');
   const searchButton = page.locator('button[class*="SearchFooter-searchButton"]').first();
@@ -226,6 +268,8 @@ async function runSearch(page) {
     if (initialDedupeHidden < 1) {
       throw new Error(`expected real search to hide duplicate groups, got status=${initialStatus}`);
     }
+    const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
+    assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
 
     await page.locator("[role='gridcell'] [class*='CheckInput-input']").first().click();
     await page.waitForFunction(
@@ -249,6 +293,8 @@ async function runSearch(page) {
         `expected hiding one result to leave ${beforeVisible - 1} visible results, got ${afterHideVisible}`
       );
     }
+    const afterHideGapStats = await page.evaluate(virtualRowGapStatsScript);
+    assertNoVirtualRowGaps(afterHideGapStats, "after hiding one result");
 
     await page.goto(PROWLARR_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
     await runSearch(page);
@@ -265,6 +311,8 @@ async function runSearch(page) {
         `expected second search to keep ${beforeVisible - 1} visible results, got ${afterSecondSearchVisible}`
       );
     }
+    const afterSecondSearchGapStats = await page.evaluate(virtualRowGapStatsScript);
+    assertNoVirtualRowGaps(afterSecondSearchGapStats, "second search results");
 
     const status = await page.locator(".powerarr-plus-status").textContent();
     console.log(
@@ -276,6 +324,9 @@ async function runSearch(page) {
           afterSecondSearchVisible,
           initialDedupeHidden,
           initialStatus,
+          initialGapStats,
+          afterHideGapStats,
+          afterSecondSearchGapStats,
           status,
         },
         null,

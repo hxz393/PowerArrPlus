@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.12
+// @version      0.1.13
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -382,11 +382,7 @@
     return resultElements();
   }
 
-  function hideRowsForHiddenReleases(hiddenReleases) {
-    if (!hiddenReleases.length) {
-      return;
-    }
-
+  function hiddenReleaseMatcher(hiddenReleases) {
     const hiddenFingerprints = new Set(
       hiddenReleases
         .map((release) => release.fingerprint || release._seenFilterFingerprint)
@@ -399,27 +395,189 @@
       }))
       .filter((spec) => spec.title);
 
-    if (!hiddenFingerprints.size && !hiddenSpecs.length) {
-      return;
-    }
-
-    for (const row of allResultRows()) {
+    return (row) => {
       const fingerprint = row.dataset.powerarrPlusFingerprint;
       if (fingerprint && hiddenFingerprints.has(fingerprint)) {
-        row.style.display = "none";
-        continue;
+        return true;
       }
 
       const rowText = resultText(row);
-      if (
-        hiddenSpecs.some(
-          (spec) =>
-            rowText.includes(spec.title) &&
-            (!spec.indexer || rowText.includes(spec.indexer))
-        )
-      ) {
+      return hiddenSpecs.some(
+        (spec) =>
+          rowText.includes(spec.title) &&
+          (!spec.indexer || rowText.includes(spec.indexer))
+      );
+    };
+  }
+
+  function hideRowsForHiddenReleases(hiddenReleases) {
+    const rows = allResultRows();
+    if (!rows.length) {
+      return;
+    }
+
+    const shouldHide = hiddenReleaseMatcher(hiddenReleases);
+    for (const row of rows) {
+      if (hiddenReleases.length && shouldHide(row)) {
         row.style.display = "none";
+        row.classList.add("powerarr-plus-hidden");
+      } else if (row.classList.contains("powerarr-plus-hidden")) {
+        row.style.display = "";
+        row.classList.remove("powerarr-plus-hidden");
       }
+    }
+
+    compactHiddenResultRows();
+  }
+
+  function numericPx(value) {
+    const parsed = Number.parseFloat(String(value || ""));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function rememberStyle(element, key, value) {
+    if (!element.dataset[key]) {
+      element.dataset[key] = value || "";
+    }
+  }
+
+  function compactHeightTarget(element, height) {
+    if (!(element instanceof HTMLElement)) {
+      return;
+    }
+
+    rememberStyle(element, "powerarrPlusOriginalHeight", element.style.height);
+    element.style.height = `${height}px`;
+  }
+
+  function restoreHeightTarget(element) {
+    if (!(element instanceof HTMLElement)) {
+      return;
+    }
+    if (element.dataset.powerarrPlusOriginalHeight !== undefined) {
+      element.style.height = element.dataset.powerarrPlusOriginalHeight;
+      delete element.dataset.powerarrPlusOriginalHeight;
+    }
+  }
+
+  function rowOriginalTop(row) {
+    if (!row.dataset.powerarrPlusOriginalTop) {
+      row.dataset.powerarrPlusOriginalTop =
+        row.style.top || window.getComputedStyle(row).top || "0px";
+    }
+
+    return numericPx(row.dataset.powerarrPlusOriginalTop) || 0;
+  }
+
+  function rowOriginalHeight(row) {
+    if (!row.dataset.powerarrPlusOriginalHeight) {
+      row.dataset.powerarrPlusOriginalHeight =
+        row.style.height || window.getComputedStyle(row).height || "";
+    }
+
+    return (
+      numericPx(row.dataset.powerarrPlusOriginalHeight) ||
+      numericPx(window.getComputedStyle(row).height) ||
+      38
+    );
+  }
+
+  function compactHiddenResultRows() {
+    const virtualRows = allResultRows().filter((row) => {
+      if (!row.matches("[role='gridcell']")) {
+        return false;
+      }
+      return window.getComputedStyle(row).position === "absolute" && row.parentElement;
+    });
+
+    if (!virtualRows.length) {
+      return;
+    }
+
+    const groups = new Map();
+    for (const row of virtualRows) {
+      const parent = row.parentElement;
+      if (!groups.has(parent)) {
+        groups.set(parent, []);
+      }
+      groups.get(parent).push(row);
+    }
+
+    for (const [parent, rows] of groups.entries()) {
+      rows.sort((left, right) => rowOriginalTop(left) - rowOriginalTop(right));
+      const rowHeight = Math.max(...rows.map(rowOriginalHeight), 1);
+      let hiddenCount = 0;
+      let fallbackIndex = 0;
+      const visibleEntries = [];
+      const used = new Set();
+      const visibleIndexByFingerprint = new Map(
+        state.lastVisible
+          .map((release, index) => [
+            release && release._seenFilterFingerprint,
+            index,
+          ])
+          .filter(([fingerprint]) => fingerprint)
+      );
+      const shouldCompact =
+        visibleIndexByFingerprint.size > 0 &&
+        state.lastTotal > state.lastVisible.length;
+
+      for (const row of rows) {
+        if (row.classList.contains("powerarr-plus-hidden")) {
+          hiddenCount += 1;
+          continue;
+        }
+
+        let fingerprint = row.dataset.powerarrPlusFingerprint;
+        if (!visibleIndexByFingerprint.has(fingerprint)) {
+          const release = findReleaseForRow(row, used);
+          fingerprint = release && release._seenFilterFingerprint;
+          if (fingerprint) {
+            row.dataset.powerarrPlusFingerprint = fingerprint;
+            rowReleaseByFingerprint.set(fingerprint, release);
+            row.classList.add("powerarr-plus-row");
+          }
+        }
+
+        if (fingerprint) {
+          used.add(fingerprint);
+        }
+
+        const compactIndex = visibleIndexByFingerprint.has(fingerprint)
+          ? visibleIndexByFingerprint.get(fingerprint)
+          : fallbackIndex;
+        fallbackIndex = Math.max(fallbackIndex, compactIndex + 1);
+        visibleEntries.push({ row, compactIndex });
+      }
+
+      if (!shouldCompact && !hiddenCount) {
+        for (const row of rows) {
+          if (row.dataset.powerarrPlusOriginalTopStyle !== undefined) {
+            row.style.top = row.dataset.powerarrPlusOriginalTopStyle;
+            delete row.dataset.powerarrPlusOriginalTopStyle;
+          }
+        }
+        restoreHeightTarget(parent);
+        restoreHeightTarget(parent.closest("[role='grid']"));
+        continue;
+      }
+
+      const mappedIndexes = visibleEntries
+        .map((entry) => entry.compactIndex)
+        .filter((index) => Number.isFinite(index));
+      const baseIndex = mappedIndexes.length ? Math.min(...mappedIndexes) : 0;
+      visibleEntries.forEach((entry, index) => {
+        rememberStyle(entry.row, "powerarrPlusOriginalTopStyle", entry.row.style.top);
+        entry.row.style.top = `${(baseIndex + index) * rowHeight}px`;
+      });
+
+      const compactedHeight = Math.max(
+        state.lastVisible.length,
+        fallbackIndex
+      ) * rowHeight;
+      compactHeightTarget(parent, compactedHeight);
+      const grid = parent.closest("[role='grid']");
+      compactHeightTarget(grid, compactedHeight);
     }
   }
 
@@ -720,6 +878,15 @@
     }
 
     const result = await servicePost("/api/hide", { releases });
+    const expandedSet = new Set(expandedFingerprints);
+    state.lastVisible = state.lastVisible.filter(
+      (release) => !expandedSet.has(release && release._seenFilterFingerprint)
+    );
+    state.lastHiddenCount += releases.length;
+    state.lastDomHiddenReleases = [
+      ...state.lastDomHiddenReleases,
+      ...releases.map(releaseToHiddenSpec),
+    ];
     for (const fingerprint of expandedFingerprints) {
       state.selected.delete(fingerprint);
       const row = document.querySelector(
@@ -727,8 +894,10 @@
       );
       if (row instanceof HTMLElement) {
         row.style.display = "none";
+        row.classList.add("powerarr-plus-hidden");
       }
     }
+    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
     updateStatus(`已隐藏 ${result.hiddenCount || releases.length} 条，重新搜索后不再显示`);
   }
 
