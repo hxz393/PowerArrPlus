@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.4
+// @version      0.1.5
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -372,8 +372,8 @@
 
   function checkedFingerprints() {
     const fingerprints = new Set(state.selected);
-    document.querySelectorAll(".powerarr-plus-checkbox:checked").forEach((checkbox) => {
-      if (!(checkbox instanceof HTMLElement)) {
+    document.querySelectorAll(".powerarr-plus-checkbox").forEach((checkbox) => {
+      if (!checkbox || checkbox.checked !== true) {
         return;
       }
 
@@ -519,13 +519,14 @@
     }
 
     const selected = state.selected.size;
+    const checked = checkedFingerprints().length;
     const hidden = state.lastHiddenCount;
     const total = state.lastTotal;
     const visible = state.lastVisible.length;
     state.statusEl.textContent =
       total > 0
-        ? `结果 ${visible}/${total}，已过滤 ${hidden}，已选 ${selected}`
-        : `等待搜索结果，已选 ${selected}`;
+        ? `结果 ${visible}/${total}，已过滤 ${hidden}，已选 ${Math.max(selected, checked)}`
+        : `等待搜索结果，已选 ${Math.max(selected, checked)}`;
   }
 
   function addStyles() {
