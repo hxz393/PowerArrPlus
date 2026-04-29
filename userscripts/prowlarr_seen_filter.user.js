@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.5
+// @version      0.1.7
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -258,6 +258,7 @@
         row.insertBefore(cell, row.firstElementChild);
       }
       cell.replaceChildren(checkbox);
+      bindSelectionCell(cell, checkbox);
       return;
     }
 
@@ -268,6 +269,49 @@
       row.insertBefore(holder, row.firstChild);
     }
     holder.replaceChildren(checkbox);
+    bindSelectionCell(holder, checkbox);
+  }
+
+  function bindSelectionCell(cell, checkbox) {
+    if (cell.dataset.powerarrPlusSelectionBound === "1") {
+      return;
+    }
+
+    cell.dataset.powerarrPlusSelectionBound = "1";
+    cell.title = "点击选择该结果";
+    cell.addEventListener("pointerdown", (event) => {
+      if (event.target === checkbox) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setCheckboxSelected(checkbox, !checkbox.checked);
+    });
+    cell.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  }
+
+  function setCheckboxSelected(checkbox, selected) {
+    const fingerprint = checkbox.dataset.powerarrPlusFingerprint;
+    checkbox.checked = selected;
+    checkbox.setAttribute("aria-checked", selected ? "true" : "false");
+
+    const row = checkbox.closest("[data-powerarr-plus-fingerprint]");
+    if (row) {
+      row.classList.toggle("powerarr-plus-selected", selected);
+    }
+
+    if (fingerprint) {
+      if (selected) {
+        state.selected.add(fingerprint);
+      } else {
+        state.selected.delete(fingerprint);
+      }
+    }
+
+    updateStatus();
   }
 
   function injectCheckboxes() {
@@ -300,18 +344,18 @@
       checkbox.dataset.powerarrPlusFingerprint = fingerprint;
       checkbox.title = "选中后可加入隐藏过滤";
       checkbox.checked = state.selected.has(fingerprint);
+      checkbox.setAttribute("aria-label", "选中后可加入隐藏过滤");
+      checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
       checkbox.addEventListener("change", () => {
-        if (checkbox.checked) {
-          state.selected.add(fingerprint);
-        } else {
-          state.selected.delete(fingerprint);
-        }
-        updateStatus();
+        setCheckboxSelected(checkbox, checkbox.checked);
+      });
+      checkbox.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setCheckboxSelected(checkbox, !checkbox.checked);
       });
       checkbox.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-      checkbox.addEventListener("mousedown", (event) => {
+        event.preventDefault();
         event.stopPropagation();
       });
       injectCell(row, checkbox);
@@ -583,6 +627,10 @@
         width: 30px;
         min-width: 30px;
         text-align: center;
+        cursor: pointer;
+      }
+      .powerarr-plus-selected {
+        background: rgba(59, 130, 246, 0.08);
       }
       .powerarr-plus-checkbox {
         width: 16px;
