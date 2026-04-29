@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.15
+// @version      0.1.16
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -22,6 +22,8 @@
     releaseByFingerprint: new Map(),
     dedupeGroupByFingerprint: new Map(),
     lastDedupeHiddenCount: 0,
+    lastServiceHiddenFingerprints: [],
+    currentPageActionHiddenFingerprints: new Set(),
     selected: new Set(),
     lastHiddenCount: 0,
     lastTotal: 0,
@@ -93,6 +95,7 @@
   async function filterReleases(releases) {
     const result = await servicePost("/api/filter", { releases });
     const serviceVisible = Array.isArray(result.visible) ? result.visible : releases;
+    const serviceHidden = Array.isArray(result.hidden) ? result.hidden : [];
     const deduped = dedupeReleases(serviceVisible);
 
     rowReleaseByFingerprint.clear();
@@ -106,6 +109,10 @@
     }
     state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
     state.lastDedupeHiddenCount = deduped.hidden.length;
+    state.lastServiceHiddenFingerprints = serviceHidden
+      .map((release) => release && (release.fingerprint || release._seenFilterFingerprint))
+      .filter(Boolean);
+    state.currentPageActionHiddenFingerprints.clear();
     state.selected.clear();
     state.lastHiddenCount = result.hiddenCount || 0;
     state.lastTotal = result.total || releases.length;
@@ -773,6 +780,7 @@
     const result = await servicePost("/api/hide", { releases });
     for (const fingerprint of expandedFingerprints) {
       state.selected.delete(fingerprint);
+      state.currentPageActionHiddenFingerprints.add(fingerprint);
     }
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
@@ -781,6 +789,43 @@
       checkbox.checked = false;
     });
     const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
+    updateStatus(message);
+    window.setTimeout(() => updateStatus(message), 0);
+  }
+
+  function currentPageHiddenFingerprints() {
+    const fingerprints = new Set(state.lastServiceHiddenFingerprints);
+    for (const fingerprint of state.currentPageActionHiddenFingerprints) {
+      fingerprints.add(fingerprint);
+    }
+
+    return Array.from(fingerprints).filter(Boolean);
+  }
+
+  async function unhideCurrentPageHidden() {
+    const fingerprints = currentPageHiddenFingerprints();
+    if (!fingerprints.length) {
+      updateStatus("本页没有已隐藏结果");
+      return;
+    }
+
+    const hiddenByService = new Set(state.lastServiceHiddenFingerprints);
+    const result = await servicePost("/api/unhide", { fingerprints });
+    const unhidden = result.unhiddenCount || fingerprints.length;
+    const unhiddenSet = new Set(fingerprints);
+    const serviceUnhidden = fingerprints.filter((fingerprint) =>
+      hiddenByService.has(fingerprint)
+    ).length;
+
+    state.lastServiceHiddenFingerprints = state.lastServiceHiddenFingerprints.filter(
+      (fingerprint) => !unhiddenSet.has(fingerprint)
+    );
+    for (const fingerprint of unhiddenSet) {
+      state.currentPageActionHiddenFingerprints.delete(fingerprint);
+    }
+    state.lastHiddenCount = Math.max(0, state.lastHiddenCount - serviceUnhidden);
+
+    const message = `已取消本页已隐藏 ${unhidden} 条，下次搜索时显示`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
   }
@@ -873,15 +918,8 @@
       );
 
       toolbar.appendChild(
-        makeButton("刷新勾选框", async () => {
-          document
-            .querySelectorAll("[data-powerarr-plus-fingerprint]")
-            .forEach((row) => {
-              row.removeAttribute("data-powerarr-plus-fingerprint");
-              row.classList.remove("powerarr-plus-row");
-              row.querySelectorAll(".powerarr-plus-cell").forEach((cell) => cell.remove());
-            });
-          injectCheckboxes();
+        makeButton("取消本页已隐藏", async () => {
+          await unhideCurrentPageHidden();
         })
       );
 

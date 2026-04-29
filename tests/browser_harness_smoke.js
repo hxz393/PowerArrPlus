@@ -134,6 +134,32 @@ function visibleHarnessRowsScript() {
       );
     }
 
+    await page.getByRole("button", { name: "取消本页已隐藏" }).click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已取消本页已隐藏 2 条"),
+      null,
+      { timeout: 30000 }
+    );
+    const afterUnhideVisible = await page.evaluate(visibleHarnessRowsScript);
+    if (afterUnhideVisible !== afterSecondSearchVisible) {
+      throw new Error(
+        `expected unhide to keep current rows until the next search, got ${afterUnhideVisible}`
+      );
+    }
+
+    await page.getByRole("button", { name: "搜索" }).click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已过滤 0"),
+      null,
+      { timeout: 30000 }
+    );
+    const afterUnhideSearchVisible = await page.evaluate(visibleHarnessRowsScript);
+    if (afterUnhideSearchVisible !== 4) {
+      throw new Error(
+        `expected 4 visible rows after unhiding current page, got ${afterUnhideSearchVisible}`
+      );
+    }
+
     const status = await page.locator(".powerarr-plus-status").textContent();
     console.log(
       JSON.stringify(
@@ -142,6 +168,8 @@ function visibleHarnessRowsScript() {
           beforeVisible,
           afterHideVisible,
           afterSecondSearchVisible,
+          afterUnhideVisible,
+          afterUnhideSearchVisible,
           status,
         },
         null,

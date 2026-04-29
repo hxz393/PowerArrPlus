@@ -58,6 +58,15 @@ function searchRequestCount(requests) {
   ).length;
 }
 
+function isTrackedRequestUrl(url) {
+  return (
+    url.includes("/api/v1/search") ||
+    url.includes("/api/filter") ||
+    url.includes("/api/hide") ||
+    url.includes("/api/unhide")
+  );
+}
+
 function virtualRowGapStatsScript() {
   const rows = Array.from(document.querySelectorAll("[role='gridcell']"))
     .filter((element) => {
@@ -205,6 +214,13 @@ async function runSearch(page) {
       return;
     }
 
+    if (url.pathname === "/api/unhide") {
+      const fingerprints = payload.fingerprints || [];
+      fingerprints.forEach((fingerprint) => hiddenFingerprints.delete(fingerprint));
+      await route.fulfill(jsonResponse({ ok: true, unhiddenCount: fingerprints.length }));
+      return;
+    }
+
     await route.fulfill(jsonResponse({ ok: true }));
   });
 
@@ -219,19 +235,19 @@ async function runSearch(page) {
   const requests = [];
   page.on("request", (request) => {
     const url = request.url();
-    if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
+    if (isTrackedRequestUrl(url)) {
       requests.push(`REQ ${request.method()} ${url}`);
     }
   });
   page.on("response", (response) => {
     const url = response.url();
-    if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
+    if (isTrackedRequestUrl(url)) {
       requests.push(`RES ${response.status()} ${url}`);
     }
   });
   page.on("requestfailed", (request) => {
     const url = request.url();
-    if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
+    if (isTrackedRequestUrl(url)) {
       requests.push(`FAILED ${request.failure()?.errorText || ""} ${url}`);
     }
   });
@@ -333,6 +349,45 @@ async function runSearch(page) {
     const afterSecondSearchGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(afterSecondSearchGapStats, "second search results");
 
+    await page.getByRole("button", { name: "取消本页已隐藏" }).click();
+    await page.waitForFunction(
+      () => /已取消本页已隐藏 [1-9]\d* 条/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
+      null,
+      { timeout: 30000 }
+    );
+    const searchRequestsAfterUnhide = searchRequestCount(requests);
+    if (searchRequestsAfterUnhide !== searchRequestsAfterManualSearch) {
+      throw new Error(
+        `unhide current page triggered a new Prowlarr search request: before=${searchRequestsAfterManualSearch}, after=${searchRequestsAfterUnhide}`
+      );
+    }
+
+    await page.goto(PROWLARR_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await runSearch(page);
+    await page.waitForFunction(
+      () => /已过滤 0/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
+      null,
+      { timeout: 90000 }
+    );
+    const searchRequestsAfterUnhideSearch = searchRequestCount(requests);
+    if (searchRequestsAfterUnhideSearch !== searchRequestsAfterManualSearch + 1) {
+      throw new Error(
+        `expected only the manual post-unhide search to call Prowlarr again: before=${searchRequestsAfterManualSearch}, after=${searchRequestsAfterUnhideSearch}`
+      );
+    }
+    const afterUnhideFilterCall = filterCalls[filterCalls.length - 1];
+    if (!afterUnhideFilterCall || afterUnhideFilterCall.hidden !== 0) {
+      throw new Error(
+        `expected current page unhide to restore hidden rows for this query: ${JSON.stringify(afterUnhideFilterCall)}`
+      );
+    }
+    const afterUnhideSearchGapStats = await page.evaluate(virtualRowGapStatsScript);
+    assertNoVirtualRowGaps(afterUnhideSearchGapStats, "post-unhide search results");
+
     const status = await page.locator(".powerarr-plus-status").textContent();
     console.log(
       JSON.stringify(
@@ -344,12 +399,16 @@ async function runSearch(page) {
           searchRequestsBeforeHide,
           searchRequestsAfterHide,
           searchRequestsAfterManualSearch,
+          searchRequestsAfterUnhide,
+          searchRequestsAfterUnhideSearch,
           initialDedupeHidden,
           initialStatus,
           latestFilterCall,
+          afterUnhideFilterCall,
           initialGapStats,
           afterHideGapStats,
           afterSecondSearchGapStats,
+          afterUnhideSearchGapStats,
           status,
         },
         null,
