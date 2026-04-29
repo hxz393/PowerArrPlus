@@ -120,3 +120,12 @@ http://127.0.0.1:18080/tests/browser_harness.html
 ```
 
 该页面会加载同一份 `userscripts/prowlarr_seen_filter.user.js`，用 XHR 模拟 Prowlarr 搜索结果和左侧原生选择框，用来检查工具条、勾选框和 `隐藏选中` 流程是否会卡住页面。
+
+真实 Prowlarr 页面冒烟测试：
+
+```powershell
+cd D:\Software\Programming\Python\PowerArrPlus
+node tests\real_prowlarr_smoke.js
+```
+
+该测试会打开 `http://localhost:9696/search` 并使用真实 Prowlarr 搜索请求；PowerArrPlus 服务会在浏览器上下文里 mock 掉，因此不会写入 Redis。若本机没有安装 `playwright` 包，可临时设置 `PLAYWRIGHT_MODULE` 指向已有的 Playwright 模块目录。

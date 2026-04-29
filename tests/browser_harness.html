@@ -42,25 +42,31 @@
         overflow: auto;
         max-height: 610px;
       }
-      table {
+      .virtualTable {
         width: 100%;
         min-width: 850px;
-        border-collapse: collapse;
         background: #f8fafc;
       }
-      th,
-      td {
+      .virtualHeader,
+      .resultGridCell {
+        display: grid;
+        grid-template-columns: 36px 88px 88px minmax(220px, 1fr) 130px 92px 74px 74px 180px;
+        align-items: center;
+      }
+      .virtualHeader > div,
+      .resultGridCell > div {
         height: 36px;
         padding: 0 10px;
         border-bottom: 1px solid #e5e7eb;
-        text-align: left;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      th {
+      .virtualHeader > div {
         color: #374151;
         font-weight: 700;
       }
-      td a {
+      .resultGridCell a {
         color: #3b82f6;
         text-decoration: none;
       }
@@ -137,22 +143,22 @@
       <aside>搜索</aside>
       <main>
         <div class="tableWrap">
-          <table aria-label="Search results">
-            <thead>
-              <tr>
-                <th class="selectCell"><input id="selectAll" type="checkbox" aria-label="全选"></th>
-                <th>协议</th>
-                <th>寿命</th>
-                <th>标题</th>
-                <th>索引器</th>
-                <th>大小</th>
-                <th>抓取</th>
-                <th>用户</th>
-                <th>分类</th>
-              </tr>
-            </thead>
-            <tbody id="results"></tbody>
-          </table>
+          <div class="virtualTable">
+            <div class="virtualHeader">
+              <div class="selectCell"><input id="selectAll" type="checkbox" aria-label="全选"></div>
+              <div>协议</div>
+              <div>寿命</div>
+              <div>标题</div>
+              <div>索引器</div>
+              <div>大小</div>
+              <div>抓取</div>
+              <div>用户</div>
+              <div>分类</div>
+            </div>
+            <div id="results" role="grid">
+              <div id="resultRowGroup" role="row"></div>
+            </div>
+          </div>
         </div>
         <div class="controls">
           <label>
@@ -354,10 +360,14 @@
 
       function renderRows(releases) {
         const results = document.getElementById("results");
-        results.replaceChildren();
+        const rowGroup = document.getElementById("resultRowGroup");
+        rowGroup.replaceChildren();
         for (const release of releases) {
-          const row = document.createElement("tr");
-          const selectCell = document.createElement("td");
+          const row = document.createElement("div");
+          row.className = "resultGridCell";
+          row.setAttribute("role", "gridcell");
+
+          const selectCell = document.createElement("div");
           selectCell.className = "selectCell";
           const checkbox = document.createElement("input");
           checkbox.type = "checkbox";
@@ -377,11 +387,11 @@
           ];
 
           for (const value of values) {
-            const cell = document.createElement("td");
+            const cell = document.createElement("div");
             cell.innerHTML = value;
             row.appendChild(cell);
           }
-          results.appendChild(row);
+          rowGroup.appendChild(row);
         }
         updateGrabState();
         document.getElementById("resultCount").textContent = `找到${releases.length}版本`;

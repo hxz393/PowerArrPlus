@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.9
+// @version      0.1.10
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -29,6 +29,8 @@
   };
 
   const rowReleaseByFingerprint = new Map();
+  const RESULT_ELEMENT_SELECTOR =
+    "[role='gridcell'], tr, [role='row'], div[class*='row'], div[class*='Row']";
 
   function isSearchUrl(input) {
     try {
@@ -182,9 +184,7 @@
   }
 
   function rowCandidates() {
-    return Array.from(
-      document.querySelectorAll("tr, [role='row'], div[class*='row'], div[class*='Row']")
-    ).filter((row) => {
+    return resultElements().filter((row) => {
       if (!(row instanceof HTMLElement)) {
         return false;
       }
@@ -207,7 +207,32 @@
       return null;
     }
 
-    return element.closest("tr, [role='row'], [role='gridcell'], div[class*='row'], div[class*='Row']");
+    return element.closest(RESULT_ELEMENT_SELECTOR);
+  }
+
+  function resultText(element) {
+    return comparableText(element.innerText || element.textContent || "");
+  }
+
+  function hasNestedGridResults(element) {
+    if (element.matches("[role='gridcell']")) {
+      return false;
+    }
+
+    return Boolean(element.querySelector("[role='gridcell']"));
+  }
+
+  function resultElements() {
+    return Array.from(document.querySelectorAll(RESULT_ELEMENT_SELECTOR)).filter((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return false;
+      }
+      if (element.closest(".powerarr-plus-toolbar")) {
+        return false;
+      }
+
+      return !hasNestedGridResults(element);
+    });
   }
 
   function releaseMatchScore(rowText, release) {
@@ -231,9 +256,7 @@
   }
 
   function allResultRows() {
-    return Array.from(
-      document.querySelectorAll("tr, [role='row'], div[class*='row'], div[class*='Row']")
-    ).filter((row) => row instanceof HTMLElement && !row.closest(".powerarr-plus-toolbar"));
+    return resultElements();
   }
 
   function hideRowsForHiddenReleases(hiddenReleases) {
@@ -241,23 +264,42 @@
       return;
     }
 
-    const hiddenTitles = hiddenReleases
-      .map((release) => comparableText(release.title || release.sortTitle))
-      .filter(Boolean);
-    if (!hiddenTitles.length) {
+    const hiddenFingerprints = new Set(
+      hiddenReleases.map((release) => release.fingerprint).filter(Boolean)
+    );
+    const hiddenSpecs = hiddenReleases
+      .map((release) => ({
+        title: comparableText(release.title || release.sortTitle),
+        indexer: comparableText(release.indexer),
+      }))
+      .filter((spec) => spec.title);
+
+    if (!hiddenFingerprints.size && !hiddenSpecs.length) {
       return;
     }
 
     for (const row of allResultRows()) {
-      const rowText = comparableText(row.innerText || row.textContent || "");
-      if (hiddenTitles.some((title) => rowText.includes(title))) {
+      const fingerprint = row.dataset.powerarrPlusFingerprint;
+      if (fingerprint && hiddenFingerprints.has(fingerprint)) {
+        row.style.display = "none";
+        continue;
+      }
+
+      const rowText = resultText(row);
+      if (
+        hiddenSpecs.some(
+          (spec) =>
+            rowText.includes(spec.title) &&
+            (!spec.indexer || rowText.includes(spec.indexer))
+        )
+      ) {
         row.style.display = "none";
       }
     }
   }
 
   function findReleaseForRow(row, used) {
-    const rowText = comparableText(row.innerText || row.textContent || "");
+    const rowText = resultText(row);
     let best = null;
     let bestScore = 0;
 
