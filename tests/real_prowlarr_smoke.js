@@ -13,6 +13,7 @@ const SERVICE_ORIGIN = "http://127.0.0.1:18081";
 
 const userscript = fs.readFileSync(USERSCRIPT_PATH, "utf8");
 const hiddenFingerprints = new Set();
+const filterCalls = [];
 
 function fingerprintRelease(release) {
   return `real-smoke:${release.indexerId || ""}:${release.guid || release.title || ""}`;
@@ -44,6 +45,50 @@ function visibleResultCountScript() {
     const style = window.getComputedStyle(element);
     return style.display !== "none" && style.visibility !== "hidden";
   }).length;
+}
+
+async function runSearch(page) {
+  const queryInput = page.locator('input[name="searchQuery"]');
+  const searchButton = page.locator('button[class*="SearchFooter-searchButton"]').first();
+  await queryInput.waitFor({ state: "visible", timeout: 30000 });
+  await searchButton.waitFor({ state: "visible", timeout: 30000 });
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const searchResponse = page
+      .waitForResponse(
+        (response) => response.url().includes("/api/v1/search"),
+        { timeout: 90000 }
+      )
+      .catch(() => null);
+    const searchRequest = page
+      .waitForRequest(
+        (request) => request.url().includes("/api/v1/search"),
+        { timeout: 3000 }
+      )
+      .catch(() => null);
+
+    await queryInput.fill("");
+    await queryInput.fill(QUERY);
+
+    if (!(await searchRequest)) {
+      await page.waitForFunction(
+        () => {
+          const button = document.querySelector('button[class*="SearchFooter-searchButton"]');
+          return button && !button.disabled;
+        },
+        null,
+        { timeout: 30000 }
+      );
+      await searchButton.click();
+    }
+
+    if (await searchResponse) {
+      return;
+    }
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error("Prowlarr search request was not sent after clicking the real search button");
 }
 
 (async () => {
@@ -78,6 +123,12 @@ function visibleResultCountScript() {
       const visible = releases.filter(
         (release) => !hiddenFingerprints.has(release._seenFilterFingerprint)
       );
+      filterCalls.push({
+        input: releases.length,
+        visible: visible.length,
+        hidden: hidden.length,
+        hiddenStored: hiddenFingerprints.size,
+      });
       await route.fulfill(
         jsonResponse({
           ok: true,
@@ -113,17 +164,28 @@ function visibleResultCountScript() {
 
   const page = await context.newPage();
   const requests = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
+      requests.push(`REQ ${request.method()} ${url}`);
+    }
+  });
   page.on("response", (response) => {
     const url = response.url();
     if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
-      requests.push(`${response.status()} ${url}`);
+      requests.push(`RES ${response.status()} ${url}`);
+    }
+  });
+  page.on("requestfailed", (request) => {
+    const url = request.url();
+    if (url.includes("/api/v1/search") || url.includes("/api/filter") || url.includes("/api/hide")) {
+      requests.push(`FAILED ${request.failure()?.errorText || ""} ${url}`);
     }
   });
 
   try {
     await page.goto(PROWLARR_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.locator("input").last().fill(QUERY);
-    await page.getByRole("button", { name: "搜索" }).click();
+    await runSearch(page);
     await page.waitForFunction(
       () => document.querySelectorAll("[role='gridcell'] input[type='checkbox']").length > 1,
       null,
@@ -170,10 +232,11 @@ function visibleResultCountScript() {
     }
 
     await page.goto(PROWLARR_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.locator("input").last().fill(QUERY);
-    await page.getByRole("button", { name: "搜索" }).click();
+    await runSearch(page);
     await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已过滤 1"),
+      () => /已过滤 [1-9]\d*/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
       null,
       { timeout: 90000 }
     );
@@ -209,6 +272,26 @@ function visibleResultCountScript() {
       .locator("input[type='checkbox']")
       .count()
       .catch(() => null);
+    const formState = await page
+      .evaluate(() => ({
+        inputs: Array.from(document.querySelectorAll("input")).map((input, index) => ({
+          index,
+          name: input.name,
+          type: input.type,
+          value: input.value,
+          placeholder: input.placeholder,
+          visible: Boolean(input.offsetParent),
+        })),
+        buttons: Array.from(document.querySelectorAll("button")).map((button, index) => ({
+          index,
+          text: (button.innerText || button.textContent || "").trim(),
+          disabled: button.disabled,
+          className: button.className,
+          title: button.title,
+          visible: Boolean(button.offsetParent),
+        })),
+      }))
+      .catch(() => null);
     const bodyText = await page
       .locator("body")
       .innerText({ timeout: 1000 })
@@ -221,7 +304,9 @@ function visibleResultCountScript() {
           title,
           status,
           checkboxCount,
+          formState,
           requests,
+          filterCalls,
           bodyExcerpt: bodyText.slice(0, 600),
         },
         null,

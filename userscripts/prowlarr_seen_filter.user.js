@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.10
+// @version      0.1.11
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -18,7 +18,11 @@
 
   const state = {
     lastVisible: [],
+    lastAllVisible: [],
     releaseByFingerprint: new Map(),
+    dedupeGroupByFingerprint: new Map(),
+    lastDedupeHiddenCount: 0,
+    lastDomHiddenReleases: [],
     selected: new Set(),
     lastHiddenCount: 0,
     lastTotal: 0,
@@ -80,20 +84,36 @@
 
   async function filterReleases(releases) {
     const result = await servicePost("/api/filter", { releases });
-    state.lastVisible = Array.isArray(result.visible) ? result.visible : releases;
+    const serviceVisible = Array.isArray(result.visible) ? result.visible : releases;
+    const deduped = dedupeReleases(serviceVisible);
+
+    rowReleaseByFingerprint.clear();
+    state.lastAllVisible = serviceVisible;
+    state.lastVisible = deduped.visible;
     state.releaseByFingerprint = new Map();
-    for (const release of state.lastVisible) {
+    for (const release of state.lastAllVisible) {
       if (release && release._seenFilterFingerprint) {
         state.releaseByFingerprint.set(release._seenFilterFingerprint, release);
       }
     }
+    state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
+    state.lastDedupeHiddenCount = deduped.hidden.length;
+    state.lastDomHiddenReleases = [
+      ...(Array.isArray(result.hidden) ? result.hidden : []),
+      ...deduped.hidden.map(releaseToHiddenSpec),
+    ];
     state.selected.clear();
     state.lastHiddenCount = result.hiddenCount || 0;
     state.lastTotal = result.total || releases.length;
     updateStatus();
-    hideRowsForHiddenReleases(Array.isArray(result.hidden) ? result.hidden : []);
+    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
     scheduleInjectCheckboxes();
-    return result;
+    return {
+      ...result,
+      visible: deduped.visible,
+      duplicateHidden: deduped.hidden,
+      duplicateHiddenCount: deduped.hidden.length,
+    };
   }
 
   function installFetchHook() {
@@ -183,6 +203,104 @@
       .trim();
   }
 
+  function decodeHtmlEntities(value) {
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = String(value || "");
+    return textarea.value;
+  }
+
+  function strictTitle(value) {
+    return decodeHtmlEntities(value).normalize("NFC").trim();
+  }
+
+  function hasStrictValue(value) {
+    return value !== undefined && value !== null && String(value).trim() !== "";
+  }
+
+  function dedupeKeyForRelease(release) {
+    if (!release || comparableText(release.protocol) !== "nzb") {
+      return null;
+    }
+
+    const title = strictTitle(release.title || release.sortTitle);
+    if (!title || !hasStrictValue(release.size) || !hasStrictValue(release.files)) {
+      return null;
+    }
+
+    return [
+      "dedupe:nzb:v1",
+      title,
+      String(release.size).trim(),
+      String(release.files).trim(),
+    ].join("\u001f");
+  }
+
+  function numericGrabs(release) {
+    const grabs = Number(release && release.grabs);
+    return Number.isFinite(grabs) ? grabs : 0;
+  }
+
+  function dedupeReleases(releases) {
+    const groups = new Map();
+    const groupByFingerprint = new Map();
+    const visibleFingerprints = new Set();
+    const hidden = [];
+
+    for (const release of releases) {
+      const key = dedupeKeyForRelease(release);
+      if (!key || !release._seenFilterFingerprint) {
+        continue;
+      }
+
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(release);
+    }
+
+    for (const group of groups.values()) {
+      if (group.length < 2) {
+        visibleFingerprints.add(group[0]._seenFilterFingerprint);
+        continue;
+      }
+
+      let representative = group[0];
+      for (const release of group.slice(1)) {
+        if (numericGrabs(release) > numericGrabs(representative)) {
+          representative = release;
+        }
+      }
+
+      visibleFingerprints.add(representative._seenFilterFingerprint);
+      for (const release of group) {
+        groupByFingerprint.set(release._seenFilterFingerprint, group);
+        if (release !== representative) {
+          hidden.push(release);
+        }
+      }
+    }
+
+    const visible = releases.filter((release) => {
+      const fingerprint = release && release._seenFilterFingerprint;
+      const key = dedupeKeyForRelease(release);
+      return !key || !fingerprint || visibleFingerprints.has(fingerprint);
+    });
+
+    return { visible, hidden, groupByFingerprint };
+  }
+
+  function releaseToHiddenSpec(release) {
+    return {
+      fingerprint: release.fingerprint || release._seenFilterFingerprint,
+      title: release.title,
+      sortTitle: release.sortTitle,
+      indexer: release.indexer,
+      indexerId: release.indexerId,
+      size: release.size,
+      files: release.files,
+    };
+  }
+
   function rowCandidates() {
     return resultElements().filter((row) => {
       if (!(row instanceof HTMLElement)) {
@@ -195,10 +313,7 @@
       if (!text || text.length < 8) {
         return false;
       }
-      return state.lastVisible.some((release) => {
-        const title = comparableText(release.title || release.sortTitle);
-        return title && text.includes(title);
-      });
+      return state.lastVisible.some((release) => releaseMatchScore(text, release) > 0);
     });
   }
 
@@ -243,7 +358,10 @@
 
     let score = title.length;
     const indexer = comparableText(release.indexer);
-    if (indexer && rowText.includes(indexer)) {
+    if (indexer && !rowText.includes(indexer)) {
+      return 0;
+    }
+    if (indexer) {
       score += 1000 + indexer.length;
     }
 
@@ -265,7 +383,9 @@
     }
 
     const hiddenFingerprints = new Set(
-      hiddenReleases.map((release) => release.fingerprint).filter(Boolean)
+      hiddenReleases
+        .map((release) => release.fingerprint || release._seenFilterFingerprint)
+        .filter(Boolean)
     );
     const hiddenSpecs = hiddenReleases
       .map((release) => ({
@@ -495,6 +615,7 @@
     }
 
     syncResultRows();
+    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
     bindNativeSelectionControls();
     if (hasNativeSelectionControls()) {
       updateStatus();
@@ -551,13 +672,36 @@
     state.injectTimer = window.setTimeout(injectCheckboxes, 250);
   }
 
+  function expandFingerprintsWithDuplicates(fingerprints) {
+    const expanded = new Set();
+    for (const fingerprint of fingerprints) {
+      if (!fingerprint) {
+        continue;
+      }
+
+      const group = state.dedupeGroupByFingerprint.get(fingerprint);
+      if (group && group.length) {
+        for (const release of group) {
+          if (release && release._seenFilterFingerprint) {
+            expanded.add(release._seenFilterFingerprint);
+          }
+        }
+      } else {
+        expanded.add(fingerprint);
+      }
+    }
+
+    return Array.from(expanded);
+  }
+
   async function hideFingerprints(fingerprints) {
     if (!fingerprints.length) {
       updateStatus("没有选中结果");
       return;
     }
 
-    const releases = fingerprints
+    const expandedFingerprints = expandFingerprintsWithDuplicates(fingerprints);
+    const releases = expandedFingerprints
       .map(
         (fingerprint) =>
           state.releaseByFingerprint.get(fingerprint) ||
@@ -571,7 +715,7 @@
     }
 
     const result = await servicePost("/api/hide", { releases });
-    for (const fingerprint of fingerprints) {
+    for (const fingerprint of expandedFingerprints) {
       state.selected.delete(fingerprint);
       const row = document.querySelector(
         `[data-powerarr-plus-fingerprint="${CSS.escape(fingerprint)}"]`
@@ -584,7 +728,11 @@
   }
 
   function currentVisibleFingerprints() {
-    const fingerprints = new Set(state.releaseByFingerprint.keys());
+    const fingerprints = new Set(
+      state.lastVisible
+        .map((release) => release && release._seenFilterFingerprint)
+        .filter(Boolean)
+    );
     document
       .querySelectorAll("[data-powerarr-plus-fingerprint]")
       .forEach((row) => {
@@ -749,11 +897,13 @@
     const selected = state.selected.size;
     const checked = checkedFingerprints().length;
     const hidden = state.lastHiddenCount;
+    const deduped = state.lastDedupeHiddenCount;
     const total = state.lastTotal;
     const visible = state.lastVisible.length;
+    const dedupeText = deduped > 0 ? `，已去重 ${deduped}` : "";
     state.statusEl.textContent =
       total > 0
-        ? `结果 ${visible}/${total}，已过滤 ${hidden}，已选 ${Math.max(selected, checked)}`
+        ? `结果 ${visible}/${total}，已过滤 ${hidden}${dedupeText}，已选 ${Math.max(selected, checked)}`
         : `等待搜索结果，已选 ${Math.max(selected, checked)}`;
   }
 
