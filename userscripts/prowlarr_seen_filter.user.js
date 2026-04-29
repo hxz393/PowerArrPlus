@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.21
+// @version      0.1.22
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -698,6 +698,75 @@
     setCurrentPageSelected(!allSelected);
   }
 
+  function nearestCheckboxContainer(checkbox) {
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return null;
+    }
+
+    let current = checkbox.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 6) {
+      if (
+        current.matches(
+          "label, [class*='CheckInput'], [class*='Checkbox'], [class*='VirtualTableSelect'], [role='gridcell'], [role='columnheader'], th"
+        )
+      ) {
+        return current;
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return checkbox.parentElement;
+  }
+
+  function nativeCheckboxVisualElements(checkbox) {
+    const elements = new Set();
+    const container = nearestCheckboxContainer(checkbox);
+    if (container instanceof HTMLElement) {
+      if (container.matches("[class*='CheckInput-input']")) {
+        elements.add(container);
+      }
+      container.querySelectorAll("[class*='CheckInput-input']").forEach((element) => {
+        if (element instanceof HTMLElement) {
+          elements.add(element);
+        }
+      });
+    }
+
+    let current = checkbox.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 6) {
+      Array.from(current.children).forEach((child) => {
+        if (child instanceof HTMLElement && child.matches("[class*='CheckInput-input']")) {
+          elements.add(child);
+        }
+      });
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return Array.from(elements);
+  }
+
+  function syncNativeCheckboxVisual(checkbox, selected, indeterminate = false) {
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return;
+    }
+
+    checkbox.setAttribute("aria-checked", indeterminate ? "mixed" : selected ? "true" : "false");
+    const container = nearestCheckboxContainer(checkbox);
+    if (container instanceof HTMLElement) {
+      container.classList.toggle("powerarr-plus-native-checked", selected);
+      container.classList.toggle("powerarr-plus-native-indeterminate", indeterminate);
+    }
+
+    nativeCheckboxVisualElements(checkbox).forEach((element) => {
+      element.classList.toggle("powerarr-plus-native-checked", selected);
+      element.classList.toggle("powerarr-plus-native-indeterminate", indeterminate);
+    });
+  }
+
   function syncNativeSelectionControls() {
     syncResultRows();
     const fingerprints = currentVisibleReleaseFingerprints().filter(
@@ -717,6 +786,7 @@
       if (isNativeSelectAllCheckbox(checkbox)) {
         checkbox.checked = allSelected;
         checkbox.indeterminate = partlySelected;
+        syncNativeCheckboxVisual(checkbox, allSelected, partlySelected);
         return;
       }
 
@@ -735,6 +805,7 @@
         !state.currentPageActionHiddenFingerprints.has(fingerprint);
       checkbox.checked = selected;
       checkbox.indeterminate = false;
+      syncNativeCheckboxVisual(checkbox, selected, false);
       row.classList.toggle("powerarr-plus-selected", selected);
     });
   }
@@ -1348,6 +1419,34 @@
       }
       .powerarr-plus-selected {
         background: rgba(59, 130, 246, 0.08);
+      }
+      .powerarr-plus-native-checked[class*='CheckInput-input'],
+      .powerarr-plus-native-indeterminate[class*='CheckInput-input'] {
+        background-color: #5aa1f2 !important;
+        border-color: #5aa1f2 !important;
+        position: relative;
+      }
+      .powerarr-plus-native-checked[class*='CheckInput-input']::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 46%;
+        width: 6px;
+        height: 11px;
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        box-sizing: border-box;
+        transform: translate(-50%, -55%) rotate(45deg);
+      }
+      .powerarr-plus-native-indeterminate[class*='CheckInput-input']::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 12px;
+        height: 2px;
+        background: #fff;
+        transform: translate(-50%, -50%);
       }
       .powerarr-plus-checkbox {
         width: 16px;

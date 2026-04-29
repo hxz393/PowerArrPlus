@@ -64,6 +64,20 @@ function searchRequestCount(requests) {
   ).length;
 }
 
+async function waitForSelectedNativeVisual(page) {
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("[class*='CheckInput-input']")).some(
+        (element) =>
+          element instanceof HTMLElement &&
+          Boolean(element.offsetParent) &&
+          element.classList.contains("powerarr-plus-native-checked")
+      ),
+    null,
+    { timeout: 30000 }
+  );
+}
+
 function isTrackedRequestUrl(url) {
   return (
     url.includes("/api/v1/search") ||
@@ -371,6 +385,29 @@ async function runSearch(page) {
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
 
+    await page.getByRole("button", { name: "全选结果" }).click();
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelector(".powerarr-plus-status")?.textContent?.includes(`已选 ${expected}`),
+      initialVisibleCount,
+      { timeout: 30000 }
+    );
+    await waitForSelectedNativeVisual(page);
+    await page.getByRole("button", { name: "清空选择" }).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0") &&
+        Array.from(document.querySelectorAll("[class*='CheckInput-input']")).every(
+          (element) =>
+            !(element instanceof HTMLElement) ||
+            !Boolean(element.offsetParent) ||
+            (!element.classList.contains("powerarr-plus-native-checked") &&
+              !element.classList.contains("powerarr-plus-native-indeterminate"))
+        ),
+      null,
+      { timeout: 30000 }
+    );
+
     await page.evaluate(() => {
       window.__powerArrPlusSelectDebug = [];
       const record = (event) => {
@@ -396,6 +433,7 @@ async function runSearch(page) {
       initialVisibleCount,
       { timeout: 30000 }
     );
+    await waitForSelectedNativeVisual(page);
     await page.waitForTimeout(300);
     await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(
