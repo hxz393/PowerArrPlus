@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.19
+// @version      0.1.20
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -32,6 +32,7 @@
     lastServiceHiddenFingerprints: [],
     currentPageActionHiddenFingerprints: new Set(),
     selected: new Set(),
+    nativeSelectAllActive: false,
     lastHiddenCount: 0,
     lastTotal: 0,
     serviceOk: null,
@@ -478,8 +479,29 @@
     return element.closest(RESULT_ELEMENT_SELECTOR);
   }
 
+  function checkboxIdentityText(checkbox) {
+    return comparableText(
+      [
+        checkbox.name,
+        checkbox.id,
+        checkbox.getAttribute("aria-label"),
+        checkbox.title,
+      ].join(" ")
+    );
+  }
+
+  function looksLikeSelectAllText(text) {
+    return /\bselectall\b/.test(text) || text.includes("select all") || text.includes("全选");
+  }
+
   function resultText(element) {
     return comparableText(element.innerText || element.textContent || "");
+  }
+
+  function currentVisibleReleaseFingerprints() {
+    return state.lastVisible
+      .map((release) => release && release._seenFilterFingerprint)
+      .filter(Boolean);
   }
 
   function hasNestedGridResults(element) {
@@ -607,6 +629,10 @@
 
   function releaseRowForNativeCheckbox(checkbox) {
     let row = resultRowForElement(checkbox);
+    if (looksLikeSelectAllText(checkboxIdentityText(checkbox))) {
+      return null;
+    }
+
     while (row instanceof HTMLElement) {
       if (row.closest(".powerarr-plus-toolbar")) {
         return null;
@@ -622,9 +648,44 @@
     return null;
   }
 
+  function isNativeSelectAllCheckbox(checkbox) {
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return false;
+    }
+    if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+      return false;
+    }
+    if (releaseRowForNativeCheckbox(checkbox)) {
+      return false;
+    }
+
+    const directLabel = checkboxIdentityText(checkbox);
+    if (looksLikeSelectAllText(directLabel)) {
+      return true;
+    }
+    if (releaseRowForNativeCheckbox(checkbox)) {
+      return false;
+    }
+
+    const headerLabel = comparableText(
+      checkbox.closest("[role='columnheader'], th, [class*='Header'], [class*='header']")?.textContent
+    );
+    return looksLikeSelectAllText(headerLabel);
+  }
+
+  function nativeSelectAllChecked() {
+    return Array.from(document.querySelectorAll('input[type="checkbox"]')).some(
+      (checkbox) => isNativeSelectAllCheckbox(checkbox) && checkbox.checked
+    );
+  }
+
   function nativeSelectionFingerprints() {
     syncNativeSelectionFromDom();
     const fingerprints = new Set();
+
+    if (nativeSelectAllChecked()) {
+      currentVisibleReleaseFingerprints().forEach((fingerprint) => fingerprints.add(fingerprint));
+    }
 
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
@@ -651,11 +712,21 @@
 
   function syncNativeSelectionFromDom() {
     syncResultRows();
+    const selectAllChecked = nativeSelectAllChecked();
+    if (selectAllChecked) {
+      state.nativeSelectAllActive = true;
+      currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.add(fingerprint));
+    }
+
+    let checkedNativeRows = 0;
     document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
         return;
       }
       if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+        return;
+      }
+      if (isNativeSelectAllCheckbox(checkbox)) {
         return;
       }
 
@@ -671,12 +742,20 @@
 
       const selected = checkbox.checked && !state.currentPageActionHiddenFingerprints.has(fingerprint);
       if (selected) {
+        checkedNativeRows += 1;
         state.selected.add(fingerprint);
       } else {
         state.selected.delete(fingerprint);
       }
       row.classList.toggle("powerarr-plus-selected", selected);
     });
+
+    if (!selectAllChecked && state.nativeSelectAllActive && checkedNativeRows === 0) {
+      currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.delete(fingerprint));
+      state.nativeSelectAllActive = false;
+    } else if (!selectAllChecked && state.nativeSelectAllActive && checkedNativeRows > 0) {
+      state.nativeSelectAllActive = false;
+    }
   }
 
   function bindNativeSelectionControls() {
@@ -687,7 +766,8 @@
       if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
         return;
       }
-      if (!releaseRowForNativeCheckbox(checkbox)) {
+      const isSelectAll = isNativeSelectAllCheckbox(checkbox);
+      if (!isSelectAll && !releaseRowForNativeCheckbox(checkbox)) {
         return;
       }
       if (checkbox.dataset.powerarrPlusNativeBound === "1") {
@@ -695,9 +775,21 @@
       }
 
       checkbox.dataset.powerarrPlusNativeBound = "1";
-      checkbox.addEventListener("change", () => {
+      const syncSelection = () => {
+        if (isSelectAll && !checkbox.checked) {
+          currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.delete(fingerprint));
+        }
         syncNativeSelectionFromDom();
         window.setTimeout(updateStatus, 0);
+      };
+      checkbox.addEventListener("change", () => {
+        syncSelection();
+        window.setTimeout(syncSelection, 0);
+        window.setTimeout(syncSelection, 50);
+      });
+      checkbox.addEventListener("click", () => {
+        window.setTimeout(syncSelection, 0);
+        window.setTimeout(syncSelection, 50);
       });
     });
   }
@@ -883,6 +975,7 @@
       state.currentPageActionHiddenFingerprints.add(fingerprint);
     }
     state.selected.clear();
+    state.nativeSelectAllActive = false;
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
         return;
@@ -894,6 +987,8 @@
     const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
+    window.setTimeout(() => updateStatus(message), 100);
+    window.setTimeout(() => updateStatus(message), 250);
   }
 
   function currentPageHiddenFingerprints() {

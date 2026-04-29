@@ -96,6 +96,19 @@ function visibleHarnessRowsScript() {
       throw new Error(`expected 4 visible deduped rows, got ${beforeVisible}`);
     }
 
+    await page.locator("#selectAll").click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 4"),
+      null,
+      { timeout: 30000 }
+    );
+    await page.locator("#selectAll").click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0"),
+      null,
+      { timeout: 30000 }
+    );
+
     await page
       .locator("#results [role='gridcell']", { hasText: "Digital Carnage" })
       .locator("input[type='checkbox']")
@@ -202,6 +215,28 @@ function visibleHarnessRowsScript() {
     if (afterUnhideSearchVisible !== 4) {
       throw new Error(
         `expected 4 visible rows after unhiding current page, got ${afterUnhideSearchVisible}`
+      );
+    }
+
+    await page.locator("#selectAll").click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 4"),
+      null,
+      { timeout: 30000 }
+    );
+    await page.getByRole("button", { name: "隐藏选中" }).click();
+    await page.waitForTimeout(1000);
+    const statusAfterSelectAllHide = await page.locator(".powerarr-plus-status").textContent();
+    if (!/已隐藏 [1-9]\d* 条，下次搜索时隐藏/.test(statusAfterSelectAllHide || "")) {
+      throw new Error(`expected select-all hide to succeed, got status=${statusAfterSelectAllHide}`);
+    }
+    const selectAllHideRequest = await page.evaluate(() => {
+      const requests = window.__powerArrPlusHarness?.hideRequests || [];
+      return requests[requests.length - 1] || [];
+    });
+    if (selectAllHideRequest.length < 4) {
+      throw new Error(
+        `expected select-all hide to include the full visible result set, got ${JSON.stringify(selectAllHideRequest)}`
       );
     }
 

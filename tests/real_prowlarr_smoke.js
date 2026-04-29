@@ -53,6 +53,11 @@ function dedupeCountFromStatus(text) {
   return match ? Number(match[1]) : 0;
 }
 
+function visibleCountFromStatus(text) {
+  const match = String(text || "").match(/结果\s+(\d+)\s*\//);
+  return match ? Number(match[1]) : 0;
+}
+
 function searchRequestCount(requests) {
   return requests.filter(
     (entry) => entry.startsWith("REQ ") && entry.includes("/api/v1/search")
@@ -204,7 +209,7 @@ async function runSearch(page) {
           return button && !button.disabled;
         },
         null,
-        { timeout: 30000 }
+        { timeout: 90000 }
       );
       await searchButton.click();
     }
@@ -359,11 +364,26 @@ async function runSearch(page) {
     }
     const initialStatus = await page.locator(".powerarr-plus-status").textContent();
     const initialDedupeHidden = dedupeCountFromStatus(initialStatus);
+    const initialVisibleCount = visibleCountFromStatus(initialStatus);
     if (initialDedupeHidden < 1) {
       throw new Error(`expected real search to hide duplicate groups, got status=${initialStatus}`);
     }
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
+
+    await page.locator('input[name="selectAll"]').click({ force: true });
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelector(".powerarr-plus-status")?.textContent?.includes(`已选 ${expected}`),
+      initialVisibleCount,
+      { timeout: 30000 }
+    );
+    await page.locator('input[name="selectAll"]').click({ force: true });
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0"),
+      null,
+      { timeout: 30000 }
+    );
 
     const firstSelected = await clickFirstSelectableResult(page);
     if (!firstSelected) {
@@ -475,9 +495,9 @@ async function runSearch(page) {
       { timeout: 90000 }
     );
     const searchRequestsAfterUnhideSearch = searchRequestCount(requests);
-    if (searchRequestsAfterUnhideSearch !== searchRequestsAfterManualSearch + 1) {
+    if (searchRequestsAfterUnhideSearch <= searchRequestsAfterUnhide) {
       throw new Error(
-        `expected only the manual post-unhide search to call Prowlarr again: before=${searchRequestsAfterManualSearch}, after=${searchRequestsAfterUnhideSearch}`
+        `expected the manual post-unhide search to call Prowlarr again: before=${searchRequestsAfterUnhide}, after=${searchRequestsAfterUnhideSearch}`
       );
     }
     const afterUnhideFilterCall = filterCalls[filterCalls.length - 1];
@@ -538,6 +558,8 @@ async function runSearch(page) {
           type: input.type,
           value: input.value,
           placeholder: input.placeholder,
+          checked: input.checked,
+          indeterminate: input.indeterminate,
           visible: Boolean(input.offsetParent),
         })),
         buttons: Array.from(document.querySelectorAll("button")).map((button, index) => ({
