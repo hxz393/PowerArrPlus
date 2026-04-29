@@ -1,7 +1,7 @@
 param(
     [string]$Bind = "127.0.0.1",
     [int]$Port = 17896,
-    [string]$RedisHost = "192.168.2.204",
+    [string]$RedisHost = "127.0.0.1",
     [int]$RedisPort = 6379
 )
 
@@ -47,4 +47,3 @@ Start-Process `
 Start-Sleep -Seconds 1
 
 curl.exe -sS --max-time 5 $healthUrl
-

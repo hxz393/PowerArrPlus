@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.17
+// @version      0.1.18
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
+// @include      /^https?:\/\/[^/]+:9696\/.*$/
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
@@ -12,9 +13,15 @@
 (function () {
   "use strict";
 
+  function defaultServiceOrigin() {
+    const host = window.location.hostname;
+    const serviceHost = host === "localhost" || host === "127.0.0.1" ? "127.0.0.1" : host;
+    return `${window.location.protocol}//${serviceHost}:17896`;
+  }
+
   const SERVICE_ORIGIN =
     window.localStorage.getItem("powerarrPlusServiceOrigin") ||
-    "http://192.168.2.204:17896";
+    defaultServiceOrigin();
 
   const state = {
     lastVisible: [],

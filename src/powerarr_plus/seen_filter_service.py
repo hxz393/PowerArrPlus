@@ -18,7 +18,7 @@ from typing import Any
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 17896
-DEFAULT_REDIS_HOST = "192.168.2.204"
+DEFAULT_REDIS_HOST = "127.0.0.1"
 DEFAULT_REDIS_PORT = 6379
 DEFAULT_KEY_PREFIX = "powerarr_plus:prowlarr_seen_filter"
 
@@ -443,4 +443,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
