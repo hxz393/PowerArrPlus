@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.0
+// @version      0.1.1
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -27,6 +27,8 @@
     statusEl: null,
     injectTimer: null,
   };
+
+  const rowReleaseByFingerprint = new Map();
 
   function isSearchUrl(input) {
     try {
@@ -87,8 +89,9 @@
     state.lastHiddenCount = result.hiddenCount || 0;
     state.lastTotal = result.total || releases.length;
     updateStatus();
+    hideRowsForHiddenReleases(Array.isArray(result.hidden) ? result.hidden : []);
     scheduleInjectCheckboxes();
-    return state.lastVisible;
+    return result;
   }
 
   function installFetchHook() {
@@ -109,11 +112,11 @@
           return response;
         }
 
-        const visible = await filterReleases(original);
+        const result = await filterReleases(original);
         const headers = new Headers(response.headers);
         headers.set("Content-Type", "application/json; charset=utf-8");
         headers.delete("Content-Length");
-        return new Response(JSON.stringify(visible), {
+        return new Response(JSON.stringify(result.visible || []), {
           status: response.status,
           statusText: response.statusText,
           headers,
@@ -127,6 +130,48 @@
 
     wrappedFetch.__powerArrPlusSeenFilterInstalled = true;
     window.fetch = wrappedFetch;
+  }
+
+  function installXhrObserver() {
+    const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+    if (!proto || proto.__powerArrPlusSeenFilterInstalled) {
+      return;
+    }
+
+    const nativeOpen = proto.open;
+    const nativeSend = proto.send;
+
+    proto.open = function (method, url) {
+      this.__powerArrPlusMethod = method;
+      this.__powerArrPlusUrl = url;
+      return nativeOpen.apply(this, arguments);
+    };
+
+    proto.send = function () {
+      this.addEventListener("load", async () => {
+        if (
+          this.status < 200 ||
+          this.status >= 300 ||
+          String(this.__powerArrPlusMethod || "GET").toUpperCase() !== "GET" ||
+          !isSearchUrl(this.__powerArrPlusUrl)
+        ) {
+          return;
+        }
+
+        try {
+          const original = JSON.parse(this.responseText || "[]");
+          if (Array.isArray(original)) {
+            await filterReleases(original);
+          }
+        } catch (error) {
+          state.serviceOk = false;
+          updateStatus(`过滤服务不可用，显示原始结果：${error.message || error}`);
+        }
+      });
+      return nativeSend.apply(this, arguments);
+    };
+
+    proto.__powerArrPlusSeenFilterInstalled = true;
   }
 
   function comparableText(value) {
@@ -155,6 +200,32 @@
         return title && text.includes(title);
       });
     });
+  }
+
+  function allResultRows() {
+    return Array.from(
+      document.querySelectorAll("tr, [role='row'], div[class*='row'], div[class*='Row']")
+    ).filter((row) => row instanceof HTMLElement && !row.closest(".powerarr-plus-toolbar"));
+  }
+
+  function hideRowsForHiddenReleases(hiddenReleases) {
+    if (!hiddenReleases.length) {
+      return;
+    }
+
+    const hiddenTitles = hiddenReleases
+      .map((release) => comparableText(release.title || release.sortTitle))
+      .filter(Boolean);
+    if (!hiddenTitles.length) {
+      return;
+    }
+
+    for (const row of allResultRows()) {
+      const rowText = comparableText(row.innerText || row.textContent || "");
+      if (hiddenTitles.some((title) => rowText.includes(title))) {
+        row.style.display = "none";
+      }
+    }
   }
 
   function findReleaseForRow(row, used) {
@@ -220,6 +291,7 @@
       const fingerprint = release._seenFilterFingerprint;
       used.add(fingerprint);
       row.dataset.powerarrPlusFingerprint = fingerprint;
+      rowReleaseByFingerprint.set(fingerprint, release);
       row.classList.add("powerarr-plus-row");
 
       const checkbox = document.createElement("input");
@@ -247,8 +319,17 @@
   }
 
   async function hideFingerprints(fingerprints) {
+    if (!fingerprints.length) {
+      updateStatus("没有选中结果");
+      return;
+    }
+
     const releases = fingerprints
-      .map((fingerprint) => state.releaseByFingerprint.get(fingerprint))
+      .map(
+        (fingerprint) =>
+          state.releaseByFingerprint.get(fingerprint) ||
+          rowReleaseByFingerprint.get(fingerprint)
+      )
       .filter(Boolean);
 
     if (!releases.length) {
@@ -269,6 +350,19 @@
     updateStatus(`已隐藏 ${result.hiddenCount || releases.length} 条，重新搜索后不再显示`);
   }
 
+  function currentVisibleFingerprints() {
+    const fingerprints = new Set(state.releaseByFingerprint.keys());
+    document
+      .querySelectorAll("[data-powerarr-plus-fingerprint]")
+      .forEach((row) => {
+        if (row instanceof HTMLElement && row.style.display !== "none") {
+          fingerprints.add(row.dataset.powerarrPlusFingerprint);
+        }
+      });
+
+    return Array.from(fingerprints).filter(Boolean);
+  }
+
   function makeButton(text, onClick) {
     const button = document.createElement("button");
     button.type = "button";
@@ -287,52 +381,79 @@
   }
 
   function ensureToolbar() {
-    if (state.toolbar || !document.body) {
+    if (!document.body) {
       return;
     }
 
-    const toolbar = document.createElement("div");
-    toolbar.className = "powerarr-plus-toolbar";
+    if (!state.toolbar) {
+      const toolbar = document.createElement("div");
+      toolbar.className = "powerarr-plus-toolbar";
 
-    const title = document.createElement("strong");
-    title.textContent = "Seen Filter";
-    toolbar.appendChild(title);
+      const title = document.createElement("strong");
+      title.textContent = "Seen Filter";
+      toolbar.appendChild(title);
 
-    toolbar.appendChild(
-      makeButton("隐藏选中", async () => {
-        await hideFingerprints(Array.from(state.selected));
-      })
-    );
+      toolbar.appendChild(
+        makeButton("隐藏选中", async () => {
+          await hideFingerprints(Array.from(state.selected));
+        })
+      );
 
-    toolbar.appendChild(
-      makeButton("隐藏本页", async () => {
-        if (window.confirm(`隐藏本页 ${state.releaseByFingerprint.size} 条可见结果？`)) {
-          await hideFingerprints(Array.from(state.releaseByFingerprint.keys()));
-        }
-      })
-    );
+      toolbar.appendChild(
+        makeButton("隐藏本页", async () => {
+          const visibleFingerprints = currentVisibleFingerprints();
+          if (window.confirm(`隐藏本页 ${visibleFingerprints.length} 条可见结果？`)) {
+            await hideFingerprints(visibleFingerprints);
+          }
+        })
+      );
 
-    toolbar.appendChild(
-      makeButton("刷新勾选框", async () => {
-        document
-          .querySelectorAll("[data-powerarr-plus-fingerprint]")
-          .forEach((row) => {
-            row.removeAttribute("data-powerarr-plus-fingerprint");
-            row.classList.remove("powerarr-plus-row");
-            row.querySelectorAll(".powerarr-plus-cell").forEach((cell) => cell.remove());
-          });
-        injectCheckboxes();
-      })
-    );
+      toolbar.appendChild(
+        makeButton("刷新勾选框", async () => {
+          document
+            .querySelectorAll("[data-powerarr-plus-fingerprint]")
+            .forEach((row) => {
+              row.removeAttribute("data-powerarr-plus-fingerprint");
+              row.classList.remove("powerarr-plus-row");
+              row.querySelectorAll(".powerarr-plus-cell").forEach((cell) => cell.remove());
+            });
+          injectCheckboxes();
+        })
+      );
 
-    const status = document.createElement("span");
-    status.className = "powerarr-plus-status";
-    toolbar.appendChild(status);
+      const status = document.createElement("span");
+      status.className = "powerarr-plus-status";
+      toolbar.appendChild(status);
 
-    document.body.appendChild(toolbar);
-    state.toolbar = toolbar;
-    state.statusEl = status;
+      state.toolbar = toolbar;
+      state.statusEl = status;
+    }
+
+    placeToolbar();
     updateStatus();
+  }
+
+  function placeToolbar() {
+    const toolbar = state.toolbar;
+    if (!toolbar) {
+      return;
+    }
+
+    const donate = document.querySelector(
+      'a[href*="prowlarr.com/donate"], a[href*="/donate"]'
+    );
+    if (donate && donate.parentElement) {
+      toolbar.classList.remove("powerarr-plus-floating");
+      if (toolbar.parentElement !== donate.parentElement || toolbar.nextSibling !== donate) {
+        donate.parentElement.insertBefore(toolbar, donate);
+      }
+      return;
+    }
+
+    toolbar.classList.add("powerarr-plus-floating");
+    if (toolbar.parentElement !== document.body) {
+      document.body.appendChild(toolbar);
+    }
   }
 
   function updateStatus(message) {
@@ -364,21 +485,27 @@
     const style = document.createElement("style");
     style.textContent = `
       .powerarr-plus-toolbar {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        z-index: 2147483647;
         display: flex;
         align-items: center;
         gap: 8px;
-        max-width: min(680px, calc(100vw - 32px));
-        padding: 8px 10px;
+        max-width: min(620px, calc(100vw - 32px));
+        margin: 0 8px;
+        padding: 3px 8px;
         border: 1px solid rgba(148, 163, 184, 0.55);
         border-radius: 6px;
         background: rgba(15, 23, 42, 0.94);
         color: #e5e7eb;
-        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
         font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .powerarr-plus-toolbar.powerarr-plus-floating {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 2147483647;
+        margin: 0;
+        padding: 8px 10px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
       }
       .powerarr-plus-toolbar button {
         border: 1px solid rgba(148, 163, 184, 0.55);
@@ -387,7 +514,7 @@
         color: #f9fafb;
         cursor: pointer;
         font: inherit;
-        padding: 3px 8px;
+        padding: 2px 7px;
       }
       .powerarr-plus-toolbar button:hover {
         background: #374151;
@@ -424,6 +551,7 @@
   }
 
   installFetchHook();
+  installXhrObserver();
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {
@@ -437,4 +565,3 @@
     startDomObserver();
   }
 })();
-
