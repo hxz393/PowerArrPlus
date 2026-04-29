@@ -47,6 +47,11 @@ function visibleResultCountScript() {
   }).length;
 }
 
+function dedupeCountFromStatus(text) {
+  const match = String(text || "").match(/已去重\s+(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
 async function runSearch(page) {
   const queryInput = page.locator('input[name="searchQuery"]');
   const searchButton = page.locator('button[class*="SearchFooter-searchButton"]').first();
@@ -196,6 +201,13 @@ async function runSearch(page) {
       null,
       { timeout: 30000 }
     );
+    await page.waitForFunction(
+      () => /已去重 [1-9]\d*/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
+      null,
+      { timeout: 30000 }
+    );
 
     const injectedCheckboxes = await page.locator(".powerarr-plus-checkbox").count();
     const injectedCells = await page.locator(".powerarr-plus-cell").count();
@@ -209,6 +221,11 @@ async function runSearch(page) {
     if (beforeVisible < 2) {
       throw new Error(`expected at least two visible real results, got ${beforeVisible}`);
     }
+    const initialStatus = await page.locator(".powerarr-plus-status").textContent();
+    const initialDedupeHidden = dedupeCountFromStatus(initialStatus);
+    if (initialDedupeHidden < 1) {
+      throw new Error(`expected real search to hide duplicate groups, got status=${initialStatus}`);
+    }
 
     await page.locator("[role='gridcell'] [class*='CheckInput-input']").first().click();
     await page.waitForFunction(
@@ -219,7 +236,9 @@ async function runSearch(page) {
 
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 1"),
+      () => /已隐藏 [1-9]\d*/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
       null,
       { timeout: 30000 }
     );
@@ -255,6 +274,8 @@ async function runSearch(page) {
           beforeVisible,
           afterHideVisible,
           afterSecondSearchVisible,
+          initialDedupeHidden,
+          initialStatus,
           status,
         },
         null,

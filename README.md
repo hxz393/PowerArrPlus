@@ -102,7 +102,7 @@ release 指纹优先级：
 页面去重规则独立于 release 指纹，只在 userscript 当前搜索结果里生效：
 
 ```text
-protocol == nzb
+protocol 是 NZB/Usenet（Prowlarr API 里通常是 usenet，页面显示为 nzb）
 title 完全一致（仅 trim、Unicode NFC、HTML entity 还原）
 size 完全一致
 files 完全一致
@@ -142,3 +142,11 @@ node tests\real_prowlarr_smoke.js
 ```
 
 该测试会打开 `http://localhost:9696/search` 并使用真实 Prowlarr 搜索请求；PowerArrPlus 服务会在浏览器上下文里 mock 掉，因此不会写入 Redis。若本机没有安装 `playwright` 包，可临时设置 `PLAYWRIGHT_MODULE` 指向已有的 Playwright 模块目录。
+
+检查真实搜索结果的去重依据：
+
+```powershell
+node tests\probe_real_duplicates.js
+```
+
+该脚本只读取真实搜索响应并统计 `protocol/title/size/files` 分组，不写入 Redis；默认不输出 indexer 详情 URL，如需排查具体条目可设置 `SHOW_GUIDS=1`。

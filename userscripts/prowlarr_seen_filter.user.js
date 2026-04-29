@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.11
+// @version      0.1.12
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -217,8 +217,13 @@
     return value !== undefined && value !== null && String(value).trim() !== "";
   }
 
+  function isNzbProtocol(release) {
+    const protocol = comparableText(release && release.protocol);
+    return protocol === "nzb" || protocol === "usenet";
+  }
+
   function dedupeKeyForRelease(release) {
-    if (!release || comparableText(release.protocol) !== "nzb") {
+    if (!release || !isNzbProtocol(release)) {
       return null;
     }
 
