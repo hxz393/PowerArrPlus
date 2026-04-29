@@ -52,6 +52,12 @@ function dedupeCountFromStatus(text) {
   return match ? Number(match[1]) : 0;
 }
 
+function searchRequestCount(requests) {
+  return requests.filter(
+    (entry) => entry.startsWith("REQ ") && entry.includes("/api/v1/search")
+  ).length;
+}
+
 function virtualRowGapStatsScript() {
   const rows = Array.from(document.querySelectorAll("[role='gridcell']"))
     .filter((element) => {
@@ -278,20 +284,26 @@ async function runSearch(page) {
       { timeout: 30000 }
     );
 
+    const searchRequestsBeforeHide = searchRequestCount(requests);
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
-      () => /已隐藏 [1-9]\d*/.test(
+      () => /已隐藏 [1-9]\d* 条，下次搜索时隐藏/.test(
         document.querySelector(".powerarr-plus-status")?.textContent || ""
       ),
       null,
-      { timeout: 30000 }
+      { timeout: 90000 }
     );
 
-    const afterHideVisible = await page.evaluate(visibleResultCountScript);
-    if (afterHideVisible !== beforeVisible - 1) {
+    const searchRequestsAfterHide = searchRequestCount(requests);
+    if (searchRequestsAfterHide !== searchRequestsBeforeHide) {
       throw new Error(
-        `expected hiding one result to leave ${beforeVisible - 1} visible results, got ${afterHideVisible}`
+        `hide selected triggered a new Prowlarr search request: before=${searchRequestsBeforeHide}, after=${searchRequestsAfterHide}`
       );
+    }
+    const afterHideVisible = await page.evaluate(visibleResultCountScript);
+    const hiddenDomRows = await page.locator(".powerarr-plus-hidden").count();
+    if (hiddenDomRows !== 0) {
+      throw new Error(`hide selected should not hide current DOM rows, got ${hiddenDomRows}`);
     }
     const afterHideGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(afterHideGapStats, "after hiding one result");
@@ -305,12 +317,19 @@ async function runSearch(page) {
       null,
       { timeout: 90000 }
     );
-    const afterSecondSearchVisible = await page.evaluate(visibleResultCountScript);
-    if (afterSecondSearchVisible !== beforeVisible - 1) {
+    const searchRequestsAfterManualSearch = searchRequestCount(requests);
+    if (searchRequestsAfterManualSearch !== searchRequestsBeforeHide + 1) {
       throw new Error(
-        `expected second search to keep ${beforeVisible - 1} visible results, got ${afterSecondSearchVisible}`
+        `expected only the manual second search to call Prowlarr again: beforeHide=${searchRequestsBeforeHide}, afterManual=${searchRequestsAfterManualSearch}`
       );
     }
+    const latestFilterCall = filterCalls[filterCalls.length - 1];
+    if (!latestFilterCall || latestFilterCall.hidden < 1) {
+      throw new Error(
+        `expected second search to receive hidden rows from the filter service: ${JSON.stringify(latestFilterCall)}`
+      );
+    }
+    const afterSecondSearchVisible = await page.evaluate(visibleResultCountScript);
     const afterSecondSearchGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(afterSecondSearchGapStats, "second search results");
 
@@ -322,8 +341,12 @@ async function runSearch(page) {
           beforeVisible,
           afterHideVisible,
           afterSecondSearchVisible,
+          searchRequestsBeforeHide,
+          searchRequestsAfterHide,
+          searchRequestsAfterManualSearch,
           initialDedupeHidden,
           initialStatus,
+          latestFilterCall,
           initialGapStats,
           afterHideGapStats,
           afterSecondSearchGapStats,

@@ -61,7 +61,7 @@ D:\Software\Programming\Python\PowerArrPlus\userscripts\prowlarr_seen_filter.use
 http://localhost:9696/search
 ```
 
-搜索后顶部 `Donate` 左侧会出现 `Seen Filter` 工具条。勾选结果后点 `隐藏选中`，再次搜索时这些结果会被隐藏。
+搜索后顶部 `Donate` 左侧会出现 `Seen Filter` 工具条。勾选结果后点 `隐藏选中` 只会写入隐藏记录并提示，下次手动搜索时这些结果会被隐藏，不会自动重新触发 Prowlarr 搜索请求。
 
 ## 配置
 

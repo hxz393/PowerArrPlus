@@ -109,10 +109,16 @@ function visibleHarnessRowsScript() {
 
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 2"),
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 2 条，下次搜索时隐藏"),
       null,
       { timeout: 30000 }
     );
+    const afterHideVisible = await page.evaluate(visibleHarnessRowsScript);
+    if (afterHideVisible !== beforeVisible) {
+      throw new Error(
+        `expected hide selected to keep current rows until the next search, got ${afterHideVisible}`
+      );
+    }
 
     await page.getByRole("button", { name: "搜索" }).click();
     await page.waitForFunction(
@@ -134,6 +140,7 @@ function visibleHarnessRowsScript() {
         {
           ok: true,
           beforeVisible,
+          afterHideVisible,
           afterSecondSearchVisible,
           status,
         },

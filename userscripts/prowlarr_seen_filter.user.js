@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.13
+// @version      0.1.15
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
 // @grant        none
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -22,7 +22,6 @@
     releaseByFingerprint: new Map(),
     dedupeGroupByFingerprint: new Map(),
     lastDedupeHiddenCount: 0,
-    lastDomHiddenReleases: [],
     selected: new Set(),
     lastHiddenCount: 0,
     lastTotal: 0,
@@ -38,7 +37,16 @@
 
   function isSearchUrl(input) {
     try {
-      const raw = typeof input === "string" ? input : input && input.url;
+      let raw = null;
+      if (typeof input === "string") {
+        raw = input;
+      } else if (input && typeof input.url === "string") {
+        raw = input.url;
+      } else if (input && typeof input.href === "string") {
+        raw = input.href;
+      } else if (input !== null && input !== undefined) {
+        raw = String(input);
+      }
       if (!raw) {
         return false;
       }
@@ -98,15 +106,10 @@
     }
     state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
     state.lastDedupeHiddenCount = deduped.hidden.length;
-    state.lastDomHiddenReleases = [
-      ...(Array.isArray(result.hidden) ? result.hidden : []),
-      ...deduped.hidden.map(releaseToHiddenSpec),
-    ];
     state.selected.clear();
     state.lastHiddenCount = result.hiddenCount || 0;
     state.lastTotal = result.total || releases.length;
     updateStatus();
-    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
     scheduleInjectCheckboxes();
     return {
       ...result,
@@ -162,6 +165,7 @@
 
     const nativeOpen = proto.open;
     const nativeSend = proto.send;
+    const nativeSetRequestHeader = proto.setRequestHeader;
 
     proto.open = function (method, url) {
       this.__powerArrPlusMethod = method;
@@ -169,31 +173,124 @@
       return nativeOpen.apply(this, arguments);
     };
 
-    proto.send = function () {
-      this.addEventListener("load", async () => {
-        if (
-          this.status < 200 ||
-          this.status >= 300 ||
-          String(this.__powerArrPlusMethod || "GET").toUpperCase() !== "GET" ||
-          !isSearchUrl(this.__powerArrPlusUrl)
-        ) {
-          return;
-        }
+    proto.setRequestHeader = function (name, value) {
+      this.__powerArrPlusRequestHeaders = this.__powerArrPlusRequestHeaders || {};
+      this.__powerArrPlusRequestHeaders[name] = value;
+      return nativeSetRequestHeader.apply(this, arguments);
+    };
 
-        try {
-          const original = JSON.parse(this.responseText || "[]");
-          if (Array.isArray(original)) {
-            await filterReleases(original);
-          }
-        } catch (error) {
-          state.serviceOk = false;
-          updateStatus(`过滤服务不可用，显示原始结果：${error.message || error}`);
-        }
-      });
+    proto.send = function () {
+      if (
+        String(this.__powerArrPlusMethod || "GET").toUpperCase() === "GET" &&
+        isSearchUrl(this.__powerArrPlusUrl)
+      ) {
+        sendSyntheticSearchXhr(this);
+        return undefined;
+      }
       return nativeSend.apply(this, arguments);
     };
 
     proto.__powerArrPlusSeenFilterInstalled = true;
+  }
+
+  function setSyntheticXhrProperty(xhr, name, getter) {
+    Object.defineProperty(xhr, name, {
+      configurable: true,
+      enumerable: true,
+      get: getter,
+    });
+  }
+
+  function installSyntheticXhrState(xhr) {
+    if (xhr.__powerArrPlusSyntheticInstalled) {
+      return;
+    }
+
+    xhr.__powerArrPlusSyntheticReadyState = 1;
+    xhr.__powerArrPlusSyntheticStatus = 0;
+    xhr.__powerArrPlusSyntheticStatusText = "";
+    xhr.__powerArrPlusSyntheticResponseUrl = "";
+    xhr.__powerArrPlusSyntheticResponseText = "";
+    xhr.__powerArrPlusSyntheticResponseHeaders = new Headers();
+
+    setSyntheticXhrProperty(xhr, "readyState", function () {
+      return this.__powerArrPlusSyntheticReadyState;
+    });
+    setSyntheticXhrProperty(xhr, "status", function () {
+      return this.__powerArrPlusSyntheticStatus;
+    });
+    setSyntheticXhrProperty(xhr, "statusText", function () {
+      return this.__powerArrPlusSyntheticStatusText;
+    });
+    setSyntheticXhrProperty(xhr, "responseURL", function () {
+      return this.__powerArrPlusSyntheticResponseUrl;
+    });
+    setSyntheticXhrProperty(xhr, "responseText", function () {
+      return this.__powerArrPlusSyntheticResponseText;
+    });
+    setSyntheticXhrProperty(xhr, "response", function () {
+      if (this.responseType === "json") {
+        try {
+          return JSON.parse(this.__powerArrPlusSyntheticResponseText || "null");
+        } catch (_error) {
+          return null;
+        }
+      }
+      return this.__powerArrPlusSyntheticResponseText;
+    });
+
+    xhr.getResponseHeader = function (name) {
+      return this.__powerArrPlusSyntheticResponseHeaders.get(name);
+    };
+    xhr.getAllResponseHeaders = function () {
+      const lines = [];
+      this.__powerArrPlusSyntheticResponseHeaders.forEach((value, name) => {
+        lines.push(`${name}: ${value}`);
+      });
+      return lines.join("\r\n");
+    };
+    xhr.__powerArrPlusSyntheticInstalled = true;
+  }
+
+  function dispatchSyntheticXhrEvent(xhr, type) {
+    xhr.dispatchEvent(new Event(type));
+  }
+
+  async function sendSyntheticSearchXhr(xhr) {
+    installSyntheticXhrState(xhr);
+    const url = new URL(xhr.__powerArrPlusUrl, window.location.href).href;
+    const headers = xhr.__powerArrPlusRequestHeaders || {};
+
+    try {
+      xhr.__powerArrPlusSyntheticReadyState = 2;
+      dispatchSyntheticXhrEvent(xhr, "readystatechange");
+
+      const response = await window.fetch(url, {
+        method: "GET",
+        credentials: "same-origin",
+        headers,
+      });
+      const text = await response.text();
+      xhr.__powerArrPlusSyntheticStatus = response.status;
+      xhr.__powerArrPlusSyntheticStatusText = response.statusText;
+      xhr.__powerArrPlusSyntheticResponseUrl = response.url;
+      xhr.__powerArrPlusSyntheticResponseText = text;
+      xhr.__powerArrPlusSyntheticResponseHeaders = response.headers;
+      xhr.__powerArrPlusSyntheticReadyState = 4;
+
+      dispatchSyntheticXhrEvent(xhr, "readystatechange");
+      dispatchSyntheticXhrEvent(xhr, response.ok ? "load" : "error");
+      dispatchSyntheticXhrEvent(xhr, "loadend");
+    } catch (error) {
+      xhr.__powerArrPlusSyntheticStatus = 0;
+      xhr.__powerArrPlusSyntheticStatusText = "";
+      xhr.__powerArrPlusSyntheticReadyState = 4;
+      state.serviceOk = false;
+      updateStatus(`搜索请求失败：${error.message || error}`);
+      dispatchSyntheticXhrEvent(xhr, "readystatechange");
+      dispatchSyntheticXhrEvent(xhr, "error");
+      dispatchSyntheticXhrEvent(xhr, "loadend");
+    }
   }
 
   function comparableText(value) {
@@ -376,209 +473,6 @@
     }
 
     return score;
-  }
-
-  function allResultRows() {
-    return resultElements();
-  }
-
-  function hiddenReleaseMatcher(hiddenReleases) {
-    const hiddenFingerprints = new Set(
-      hiddenReleases
-        .map((release) => release.fingerprint || release._seenFilterFingerprint)
-        .filter(Boolean)
-    );
-    const hiddenSpecs = hiddenReleases
-      .map((release) => ({
-        title: comparableText(release.title || release.sortTitle),
-        indexer: comparableText(release.indexer),
-      }))
-      .filter((spec) => spec.title);
-
-    return (row) => {
-      const fingerprint = row.dataset.powerarrPlusFingerprint;
-      if (fingerprint && hiddenFingerprints.has(fingerprint)) {
-        return true;
-      }
-
-      const rowText = resultText(row);
-      return hiddenSpecs.some(
-        (spec) =>
-          rowText.includes(spec.title) &&
-          (!spec.indexer || rowText.includes(spec.indexer))
-      );
-    };
-  }
-
-  function hideRowsForHiddenReleases(hiddenReleases) {
-    const rows = allResultRows();
-    if (!rows.length) {
-      return;
-    }
-
-    const shouldHide = hiddenReleaseMatcher(hiddenReleases);
-    for (const row of rows) {
-      if (hiddenReleases.length && shouldHide(row)) {
-        row.style.display = "none";
-        row.classList.add("powerarr-plus-hidden");
-      } else if (row.classList.contains("powerarr-plus-hidden")) {
-        row.style.display = "";
-        row.classList.remove("powerarr-plus-hidden");
-      }
-    }
-
-    compactHiddenResultRows();
-  }
-
-  function numericPx(value) {
-    const parsed = Number.parseFloat(String(value || ""));
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  function rememberStyle(element, key, value) {
-    if (!element.dataset[key]) {
-      element.dataset[key] = value || "";
-    }
-  }
-
-  function compactHeightTarget(element, height) {
-    if (!(element instanceof HTMLElement)) {
-      return;
-    }
-
-    rememberStyle(element, "powerarrPlusOriginalHeight", element.style.height);
-    element.style.height = `${height}px`;
-  }
-
-  function restoreHeightTarget(element) {
-    if (!(element instanceof HTMLElement)) {
-      return;
-    }
-    if (element.dataset.powerarrPlusOriginalHeight !== undefined) {
-      element.style.height = element.dataset.powerarrPlusOriginalHeight;
-      delete element.dataset.powerarrPlusOriginalHeight;
-    }
-  }
-
-  function rowOriginalTop(row) {
-    if (!row.dataset.powerarrPlusOriginalTop) {
-      row.dataset.powerarrPlusOriginalTop =
-        row.style.top || window.getComputedStyle(row).top || "0px";
-    }
-
-    return numericPx(row.dataset.powerarrPlusOriginalTop) || 0;
-  }
-
-  function rowOriginalHeight(row) {
-    if (!row.dataset.powerarrPlusOriginalHeight) {
-      row.dataset.powerarrPlusOriginalHeight =
-        row.style.height || window.getComputedStyle(row).height || "";
-    }
-
-    return (
-      numericPx(row.dataset.powerarrPlusOriginalHeight) ||
-      numericPx(window.getComputedStyle(row).height) ||
-      38
-    );
-  }
-
-  function compactHiddenResultRows() {
-    const virtualRows = allResultRows().filter((row) => {
-      if (!row.matches("[role='gridcell']")) {
-        return false;
-      }
-      return window.getComputedStyle(row).position === "absolute" && row.parentElement;
-    });
-
-    if (!virtualRows.length) {
-      return;
-    }
-
-    const groups = new Map();
-    for (const row of virtualRows) {
-      const parent = row.parentElement;
-      if (!groups.has(parent)) {
-        groups.set(parent, []);
-      }
-      groups.get(parent).push(row);
-    }
-
-    for (const [parent, rows] of groups.entries()) {
-      rows.sort((left, right) => rowOriginalTop(left) - rowOriginalTop(right));
-      const rowHeight = Math.max(...rows.map(rowOriginalHeight), 1);
-      let hiddenCount = 0;
-      let fallbackIndex = 0;
-      const visibleEntries = [];
-      const used = new Set();
-      const visibleIndexByFingerprint = new Map(
-        state.lastVisible
-          .map((release, index) => [
-            release && release._seenFilterFingerprint,
-            index,
-          ])
-          .filter(([fingerprint]) => fingerprint)
-      );
-      const shouldCompact =
-        visibleIndexByFingerprint.size > 0 &&
-        state.lastTotal > state.lastVisible.length;
-
-      for (const row of rows) {
-        if (row.classList.contains("powerarr-plus-hidden")) {
-          hiddenCount += 1;
-          continue;
-        }
-
-        let fingerprint = row.dataset.powerarrPlusFingerprint;
-        if (!visibleIndexByFingerprint.has(fingerprint)) {
-          const release = findReleaseForRow(row, used);
-          fingerprint = release && release._seenFilterFingerprint;
-          if (fingerprint) {
-            row.dataset.powerarrPlusFingerprint = fingerprint;
-            rowReleaseByFingerprint.set(fingerprint, release);
-            row.classList.add("powerarr-plus-row");
-          }
-        }
-
-        if (fingerprint) {
-          used.add(fingerprint);
-        }
-
-        const compactIndex = visibleIndexByFingerprint.has(fingerprint)
-          ? visibleIndexByFingerprint.get(fingerprint)
-          : fallbackIndex;
-        fallbackIndex = Math.max(fallbackIndex, compactIndex + 1);
-        visibleEntries.push({ row, compactIndex });
-      }
-
-      if (!shouldCompact && !hiddenCount) {
-        for (const row of rows) {
-          if (row.dataset.powerarrPlusOriginalTopStyle !== undefined) {
-            row.style.top = row.dataset.powerarrPlusOriginalTopStyle;
-            delete row.dataset.powerarrPlusOriginalTopStyle;
-          }
-        }
-        restoreHeightTarget(parent);
-        restoreHeightTarget(parent.closest("[role='grid']"));
-        continue;
-      }
-
-      const mappedIndexes = visibleEntries
-        .map((entry) => entry.compactIndex)
-        .filter((index) => Number.isFinite(index));
-      const baseIndex = mappedIndexes.length ? Math.min(...mappedIndexes) : 0;
-      visibleEntries.forEach((entry, index) => {
-        rememberStyle(entry.row, "powerarrPlusOriginalTopStyle", entry.row.style.top);
-        entry.row.style.top = `${(baseIndex + index) * rowHeight}px`;
-      });
-
-      const compactedHeight = Math.max(
-        state.lastVisible.length,
-        fallbackIndex
-      ) * rowHeight;
-      compactHeightTarget(parent, compactedHeight);
-      const grid = parent.closest("[role='grid']");
-      compactHeightTarget(grid, compactedHeight);
-    }
   }
 
   function findReleaseForRow(row, used) {
@@ -778,7 +672,6 @@
     }
 
     syncResultRows();
-    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
     bindNativeSelectionControls();
     if (hasNativeSelectionControls()) {
       updateStatus();
@@ -878,27 +771,18 @@
     }
 
     const result = await servicePost("/api/hide", { releases });
-    const expandedSet = new Set(expandedFingerprints);
-    state.lastVisible = state.lastVisible.filter(
-      (release) => !expandedSet.has(release && release._seenFilterFingerprint)
-    );
-    state.lastHiddenCount += releases.length;
-    state.lastDomHiddenReleases = [
-      ...state.lastDomHiddenReleases,
-      ...releases.map(releaseToHiddenSpec),
-    ];
     for (const fingerprint of expandedFingerprints) {
       state.selected.delete(fingerprint);
-      const row = document.querySelector(
-        `[data-powerarr-plus-fingerprint="${CSS.escape(fingerprint)}"]`
-      );
-      if (row instanceof HTMLElement) {
-        row.style.display = "none";
-        row.classList.add("powerarr-plus-hidden");
-      }
     }
-    hideRowsForHiddenReleases(state.lastDomHiddenReleases);
-    updateStatus(`已隐藏 ${result.hiddenCount || releases.length} 条，重新搜索后不再显示`);
+    document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
+        return;
+      }
+      checkbox.checked = false;
+    });
+    const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
+    updateStatus(message);
+    window.setTimeout(() => updateStatus(message), 0);
   }
 
   function currentVisibleFingerprints() {
