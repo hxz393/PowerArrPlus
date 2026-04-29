@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.20
+// @version      0.1.21
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -32,13 +32,15 @@
     lastServiceHiddenFingerprints: [],
     currentPageActionHiddenFingerprints: new Set(),
     selected: new Set(),
-    nativeSelectAllActive: false,
     lastHiddenCount: 0,
     lastTotal: 0,
     serviceOk: null,
     toolbar: null,
     statusEl: null,
     injectTimer: null,
+    nativeSelectionInterceptorInstalled: false,
+    lastNativeSelectionKey: "",
+    lastNativeSelectionAt: 0,
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -673,52 +675,38 @@
     return looksLikeSelectAllText(headerLabel);
   }
 
-  function nativeSelectAllChecked() {
-    return Array.from(document.querySelectorAll('input[type="checkbox"]')).some(
-      (checkbox) => isNativeSelectAllCheckbox(checkbox) && checkbox.checked
+  function setCurrentPageSelected(selected) {
+    const fingerprints = currentVisibleReleaseFingerprints();
+    for (const fingerprint of fingerprints) {
+      if (selected && !state.currentPageActionHiddenFingerprints.has(fingerprint)) {
+        state.selected.add(fingerprint);
+      } else {
+        state.selected.delete(fingerprint);
+      }
+    }
+    syncNativeSelectionControls();
+    updateStatus();
+  }
+
+  function toggleCurrentPageSelection() {
+    const fingerprints = currentVisibleReleaseFingerprints();
+    const selectable = fingerprints.filter(
+      (fingerprint) => !state.currentPageActionHiddenFingerprints.has(fingerprint)
     );
+    const allSelected =
+      selectable.length > 0 && selectable.every((fingerprint) => state.selected.has(fingerprint));
+    setCurrentPageSelected(!allSelected);
   }
 
-  function nativeSelectionFingerprints() {
-    syncNativeSelectionFromDom();
-    const fingerprints = new Set();
-
-    if (nativeSelectAllChecked()) {
-      currentVisibleReleaseFingerprints().forEach((fingerprint) => fingerprints.add(fingerprint));
-    }
-
-    document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
-      if (!(checkbox instanceof HTMLInputElement)) {
-        return;
-      }
-      if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
-        return;
-      }
-
-      const row = releaseRowForNativeCheckbox(checkbox);
-      if (!(row instanceof HTMLElement)) {
-        return;
-      }
-
-      const fingerprint = row.dataset.powerarrPlusFingerprint;
-
-      if (fingerprint && !state.currentPageActionHiddenFingerprints.has(fingerprint)) {
-        fingerprints.add(fingerprint);
-      }
-    });
-
-    return Array.from(fingerprints);
-  }
-
-  function syncNativeSelectionFromDom() {
+  function syncNativeSelectionControls() {
     syncResultRows();
-    const selectAllChecked = nativeSelectAllChecked();
-    if (selectAllChecked) {
-      state.nativeSelectAllActive = true;
-      currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.add(fingerprint));
-    }
+    const fingerprints = currentVisibleReleaseFingerprints().filter(
+      (fingerprint) => !state.currentPageActionHiddenFingerprints.has(fingerprint)
+    );
+    const selectedCount = fingerprints.filter((fingerprint) => state.selected.has(fingerprint)).length;
+    const allSelected = fingerprints.length > 0 && selectedCount === fingerprints.length;
+    const partlySelected = selectedCount > 0 && !allSelected;
 
-    let checkedNativeRows = 0;
     document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
         return;
@@ -727,6 +715,8 @@
         return;
       }
       if (isNativeSelectAllCheckbox(checkbox)) {
+        checkbox.checked = allSelected;
+        checkbox.indeterminate = partlySelected;
         return;
       }
 
@@ -740,25 +730,17 @@
         return;
       }
 
-      const selected = checkbox.checked && !state.currentPageActionHiddenFingerprints.has(fingerprint);
-      if (selected) {
-        checkedNativeRows += 1;
-        state.selected.add(fingerprint);
-      } else {
-        state.selected.delete(fingerprint);
-      }
+      const selected =
+        state.selected.has(fingerprint) &&
+        !state.currentPageActionHiddenFingerprints.has(fingerprint);
+      checkbox.checked = selected;
+      checkbox.indeterminate = false;
       row.classList.toggle("powerarr-plus-selected", selected);
     });
-
-    if (!selectAllChecked && state.nativeSelectAllActive && checkedNativeRows === 0) {
-      currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.delete(fingerprint));
-      state.nativeSelectAllActive = false;
-    } else if (!selectAllChecked && state.nativeSelectAllActive && checkedNativeRows > 0) {
-      state.nativeSelectAllActive = false;
-    }
   }
 
   function bindNativeSelectionControls() {
+    installNativeSelectionInterceptor();
     document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
         return;
@@ -775,23 +757,121 @@
       }
 
       checkbox.dataset.powerarrPlusNativeBound = "1";
-      const syncSelection = () => {
-        if (isSelectAll && !checkbox.checked) {
-          currentVisibleReleaseFingerprints().forEach((fingerprint) => state.selected.delete(fingerprint));
-        }
-        syncNativeSelectionFromDom();
-        window.setTimeout(updateStatus, 0);
-      };
-      checkbox.addEventListener("change", () => {
-        syncSelection();
-        window.setTimeout(syncSelection, 0);
-        window.setTimeout(syncSelection, 50);
-      });
-      checkbox.addEventListener("click", () => {
-        window.setTimeout(syncSelection, 0);
-        window.setTimeout(syncSelection, 50);
+      const handleEvent = (event) => handleNativeCheckboxSelection(checkbox, event);
+      ["pointerdown", "mousedown", "click", "input", "change"].forEach((eventName) => {
+        checkbox.addEventListener(eventName, handleEvent, true);
       });
     });
+    syncNativeSelectionControls();
+  }
+
+  function nativeCheckboxFromEvent(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return null;
+    }
+    let checkbox = target.closest('input[type="checkbox"]');
+    let wrapper = null;
+    if (!(checkbox instanceof HTMLInputElement)) {
+      wrapper = target.closest("label, [class*='CheckInput'], [class*='Checkbox'], [class*='Check'], [class*='check']");
+      checkbox = wrapper && wrapper.querySelector('input[type="checkbox"]');
+    }
+    if (!(checkbox instanceof HTMLInputElement) && wrapper) {
+      let current = wrapper.parentElement;
+      let depth = 0;
+      while (!(checkbox instanceof HTMLInputElement) && current && depth < 6) {
+        checkbox = current.querySelector('input[type="checkbox"]');
+        current = current.parentElement;
+        depth += 1;
+      }
+    }
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return null;
+    }
+    if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+      return null;
+    }
+    return checkbox;
+  }
+
+  function installNativeSelectionInterceptor() {
+    if (state.nativeSelectionInterceptorInstalled) {
+      return;
+    }
+    if (!document.documentElement) {
+      document.addEventListener("DOMContentLoaded", installNativeSelectionInterceptor, { once: true });
+      return;
+    }
+
+    const handleNativeCheckboxEvent = (event) => {
+      const checkbox = nativeCheckboxFromEvent(event);
+      if (!checkbox) {
+        return;
+      }
+
+      handleNativeCheckboxSelection(checkbox, event);
+    };
+
+    ["pointerdown", "mousedown", "click", "input", "change"].forEach((eventName) => {
+      window.addEventListener(eventName, handleNativeCheckboxEvent, true);
+      document.addEventListener(eventName, handleNativeCheckboxEvent, true);
+      document.documentElement.addEventListener(eventName, handleNativeCheckboxEvent, true);
+    });
+    state.nativeSelectionInterceptorInstalled = true;
+  }
+
+  function handleNativeCheckboxSelection(checkbox, event) {
+    if (!(checkbox instanceof HTMLInputElement)) {
+      return;
+    }
+    if (
+      (event.type === "pointerdown" || event.type === "mousedown") &&
+      typeof event.button === "number" &&
+      event.button !== 0
+    ) {
+      return;
+    }
+
+    syncResultRows();
+    const isSelectAll = isNativeSelectAllCheckbox(checkbox);
+    const row = isSelectAll ? null : releaseRowForNativeCheckbox(checkbox);
+    if (!isSelectAll && !(row instanceof HTMLElement)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+      event.stopImmediatePropagation();
+    }
+
+    const fingerprint = isSelectAll ? "__powerarr_plus_select_all__" : row.dataset.powerarrPlusFingerprint;
+    const now = Date.now();
+    if (
+      fingerprint &&
+      state.lastNativeSelectionKey === fingerprint &&
+      now - state.lastNativeSelectionAt < 250
+    ) {
+      syncNativeSelectionControls();
+      return;
+    }
+    state.lastNativeSelectionKey = fingerprint || "";
+    state.lastNativeSelectionAt = now;
+
+    if (isSelectAll) {
+      toggleCurrentPageSelection();
+    } else if (fingerprint) {
+      if (state.selected.has(fingerprint)) {
+        state.selected.delete(fingerprint);
+      } else if (!state.currentPageActionHiddenFingerprints.has(fingerprint)) {
+        state.selected.add(fingerprint);
+      }
+      syncNativeSelectionControls();
+      updateStatus();
+    }
+
+    window.setTimeout(syncNativeSelectionControls, 0);
+    window.setTimeout(syncNativeSelectionControls, 50);
   }
 
   function hasNativeSelectionControls() {
@@ -879,7 +959,7 @@
     syncResultRows();
     bindNativeSelectionControls();
     if (hasNativeSelectionControls()) {
-      syncNativeSelectionFromDom();
+      syncNativeSelectionControls();
       updateStatus();
       return;
     }
@@ -975,15 +1055,13 @@
       state.currentPageActionHiddenFingerprints.add(fingerprint);
     }
     state.selected.clear();
-    state.nativeSelectAllActive = false;
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
         return;
       }
       checkbox.checked = false;
-      checkbox.dispatchEvent(new Event("input", { bubbles: true }));
-      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    syncNativeSelectionControls();
     const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
@@ -1047,7 +1125,6 @@
 
   function checkedFingerprints() {
     const fingerprints = new Set(state.selected);
-    nativeSelectionFingerprints().forEach((fingerprint) => fingerprints.add(fingerprint));
 
     document.querySelectorAll(".powerarr-plus-checkbox").forEach((checkbox) => {
       if (!checkbox || checkbox.checked !== true) {
@@ -1099,6 +1176,18 @@
       const title = document.createElement("strong");
       title.textContent = "Seen Filter";
       toolbar.appendChild(title);
+
+      toolbar.appendChild(
+        makeButton("全选结果", async () => {
+          setCurrentPageSelected(true);
+        })
+      );
+
+      toolbar.appendChild(
+        makeButton("清空选择", async () => {
+          setCurrentPageSelected(false);
+        })
+      );
 
       toolbar.appendChild(
         makeButton("隐藏选中", async () => {
@@ -1210,7 +1299,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        max-width: min(620px, calc(100vw - 32px));
+        max-width: min(760px, calc(100vw - 32px));
         margin: 0 8px;
         padding: 3px 8px;
         border: 1px solid rgba(148, 163, 184, 0.55);
@@ -1295,6 +1384,7 @@
   if (window.localStorage.getItem("powerarrPlusDisableXhrObserver") !== "1") {
     installXhrObserver();
   }
+  installNativeSelectionInterceptor();
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {

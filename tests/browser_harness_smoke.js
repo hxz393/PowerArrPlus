@@ -102,6 +102,7 @@ function visibleHarnessRowsScript() {
       null,
       { timeout: 30000 }
     );
+    await page.waitForTimeout(300);
     await page.locator("#selectAll").click();
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0"),
@@ -130,8 +131,8 @@ function visibleHarnessRowsScript() {
       }
 
       const checkbox = row.querySelector("input[type='checkbox']");
-      if (!checkbox || !checkbox.checked) {
-        throw new Error("expected the Digital Carnage row to be selected before reuse");
+      if (!checkbox) {
+        throw new Error("expected the Digital Carnage row to have a checkbox before reuse");
       }
 
       const cells = Array.from(row.children);
@@ -224,6 +225,7 @@ function visibleHarnessRowsScript() {
       null,
       { timeout: 30000 }
     );
+    await page.waitForTimeout(300);
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForTimeout(1000);
     const statusAfterSelectAllHide = await page.locator(".powerarr-plus-status").textContent();

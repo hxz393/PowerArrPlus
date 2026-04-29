@@ -371,6 +371,24 @@ async function runSearch(page) {
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
 
+    await page.evaluate(() => {
+      window.__powerArrPlusSelectDebug = [];
+      const record = (event) => {
+        const target = event.target;
+        window.__powerArrPlusSelectDebug.push({
+          type: event.type,
+          tagName: target?.tagName || "",
+          name: target?.name || "",
+          id: target?.id || "",
+          checked: target?.checked === true,
+          className: String(target?.className || ""),
+        });
+      };
+      ["pointerdown", "mousedown", "click", "input", "change"].forEach((eventName) => {
+        document.addEventListener(eventName, record, true);
+      });
+    });
+
     await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(
       (expected) =>
@@ -378,6 +396,7 @@ async function runSearch(page) {
       initialVisibleCount,
       { timeout: 30000 }
     );
+    await page.waitForTimeout(300);
     await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0"),
@@ -561,6 +580,7 @@ async function runSearch(page) {
           checked: input.checked,
           indeterminate: input.indeterminate,
           visible: Boolean(input.offsetParent),
+          powerarrPlusBound: input.dataset.powerarrPlusNativeBound || "",
         })),
         buttons: Array.from(document.querySelectorAll("button")).map((button, index) => ({
           index,
@@ -571,6 +591,9 @@ async function runSearch(page) {
           visible: Boolean(button.offsetParent),
         })),
       }))
+      .catch(() => null);
+    const selectDebug = await page
+      .evaluate(() => window.__powerArrPlusSelectDebug || null)
       .catch(() => null);
     const bodyText = await page
       .locator("body")
@@ -585,6 +608,7 @@ async function runSearch(page) {
           status,
           checkboxCount,
           formState,
+          selectDebug,
           requests,
           filterCalls,
           hideCalls,
