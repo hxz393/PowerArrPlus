@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.1
+// @version      0.1.3
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
 // @grant        none
-// @run-at       document-start
+// @run-at       document-idle
 // ==/UserScript==
 
 (function () {
@@ -385,6 +385,7 @@
       return;
     }
 
+    let created = false;
     if (!state.toolbar) {
       const toolbar = document.createElement("div");
       toolbar.className = "powerarr-plus-toolbar";
@@ -427,10 +428,14 @@
 
       state.toolbar = toolbar;
       state.statusEl = status;
+      document.body.appendChild(toolbar);
+      created = true;
     }
 
     placeToolbar();
-    updateStatus();
+    if (created) {
+      updateStatus();
+    }
   }
 
   function placeToolbar() {
@@ -439,21 +444,34 @@
       return;
     }
 
+    if (toolbar.parentElement !== document.body) {
+      document.body.appendChild(toolbar);
+    }
+
     const donate = document.querySelector(
       'a[href*="prowlarr.com/donate"], a[href*="/donate"]'
     );
-    if (donate && donate.parentElement) {
+    if (donate instanceof HTMLElement) {
+      const rect = donate.getBoundingClientRect();
+      const width = toolbar.offsetWidth || 420;
+      const height = toolbar.offsetHeight || 32;
+      const left = Math.max(8, rect.left - width - 8);
+      const top = Math.max(8, rect.top + (rect.height - height) / 2);
       toolbar.classList.remove("powerarr-plus-floating");
-      if (toolbar.parentElement !== donate.parentElement || toolbar.nextSibling !== donate) {
-        donate.parentElement.insertBefore(toolbar, donate);
-      }
+      toolbar.classList.add("powerarr-plus-anchored");
+      toolbar.style.left = `${left}px`;
+      toolbar.style.top = `${top}px`;
+      toolbar.style.right = "auto";
+      toolbar.style.bottom = "auto";
       return;
     }
 
     toolbar.classList.add("powerarr-plus-floating");
-    if (toolbar.parentElement !== document.body) {
-      document.body.appendChild(toolbar);
-    }
+    toolbar.classList.remove("powerarr-plus-anchored");
+    toolbar.style.left = "";
+    toolbar.style.top = "";
+    toolbar.style.right = "";
+    toolbar.style.bottom = "";
   }
 
   function updateStatus(message) {
@@ -485,6 +503,8 @@
     const style = document.createElement("style");
     style.textContent = `
       .powerarr-plus-toolbar {
+        position: fixed;
+        z-index: 2147483647;
         display: flex;
         align-items: center;
         gap: 8px;
@@ -498,11 +518,13 @@
         box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
         font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
+      .powerarr-plus-toolbar.powerarr-plus-anchored {
+        bottom: auto;
+        right: auto;
+      }
       .powerarr-plus-toolbar.powerarr-plus-floating {
-        position: fixed;
         right: 16px;
         bottom: 16px;
-        z-index: 2147483647;
         margin: 0;
         padding: 8px 10px;
         box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
@@ -543,15 +565,30 @@
   }
 
   function startDomObserver() {
-    const observer = new MutationObserver(() => {
-      ensureToolbar();
+    const observer = new MutationObserver((mutations) => {
+      if (
+        state.toolbar &&
+        mutations.every((mutation) => state.toolbar.contains(mutation.target))
+      ) {
+        return;
+      }
+
+      if (!state.toolbar) {
+        ensureToolbar();
+      } else {
+        placeToolbar();
+      }
       scheduleInjectCheckboxes();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener("resize", placeToolbar);
+    window.addEventListener("scroll", placeToolbar, true);
   }
 
   installFetchHook();
-  installXhrObserver();
+  if (window.localStorage.getItem("powerarrPlusEnableXhrObserver") === "1") {
+    installXhrObserver();
+  }
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => {

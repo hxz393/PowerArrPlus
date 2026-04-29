@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>PowerArrPlus Browser Harness</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 16px;
+        height: 54px;
+        padding: 0 18px;
+        border-bottom: 1px solid #d1d5db;
+      }
+      main {
+        padding: 24px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 18px;
+      }
+      th,
+      td {
+        padding: 8px 10px;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Prowlarr Harness</strong>
+      <a href="https://prowlarr.com/donate">Donate</a>
+    </header>
+    <main>
+      <button id="searchButton" type="button">搜索</button>
+      <table>
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Indexer</th>
+            <th>Size</th>
+          </tr>
+        </thead>
+        <tbody id="results"></tbody>
+      </table>
+    </main>
+    <script>
+      const nativeFetchForHarness = window.fetch.bind(window);
+      window.fetch = function(input, init) {
+        const raw = typeof input === "string" ? input : input && input.url;
+        const url = new URL(raw || "", window.location.href);
+        if (url.pathname.endsWith("/api/v1/search")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify([
+                {
+                  guid: "powerarr-plus-browser-smoke-1",
+                  indexerId: 51,
+                  indexer: "Harness",
+                  title: "PowerArrPlus Browser Smoke 1",
+                  sortTitle: "PowerArrPlus Browser Smoke 1",
+                  size: 123456789,
+                  protocol: "torrent"
+                },
+                {
+                  guid: "powerarr-plus-browser-smoke-2",
+                  indexerId: 51,
+                  indexer: "Harness",
+                  title: "PowerArrPlus Browser Smoke 2",
+                  sortTitle: "PowerArrPlus Browser Smoke 2",
+                  size: 987654321,
+                  protocol: "torrent"
+                }
+              ]),
+              { headers: { "Content-Type": "application/json; charset=utf-8" } }
+            )
+          );
+        }
+
+        return nativeFetchForHarness(input, init);
+      };
+
+      function renderRows(releases) {
+        const results = document.getElementById("results");
+        results.replaceChildren();
+        for (const release of releases) {
+          const row = document.createElement("tr");
+          for (const value of [release.title, release.indexer, release.size]) {
+            const cell = document.createElement("td");
+            cell.textContent = value;
+            row.appendChild(cell);
+          }
+          results.appendChild(row);
+        }
+      }
+
+      document.getElementById("searchButton").addEventListener("click", async () => {
+        const releases = await fetch("/api/v1/search?q=smoke").then((response) =>
+          response.json()
+        );
+        renderRows(releases);
+      });
+    </script>
+    <script src="/userscripts/prowlarr_seen_filter.user.js"></script>
+  </body>
+</html>

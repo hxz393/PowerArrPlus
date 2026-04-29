@@ -105,3 +105,18 @@ cd D:\Software\Programming\Python\PowerArrPlus
 $env:PYTHONPATH = "src"
 python -m unittest discover -s tests
 ```
+
+浏览器冒烟测试：
+
+```powershell
+cd D:\Software\Programming\Python\PowerArrPlus
+python -m http.server 18080 --bind 127.0.0.1
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:18080/tests/browser_harness.html
+```
+
+该页面会加载同一份 `userscripts/prowlarr_seen_filter.user.js`，模拟 Prowlarr 搜索结果，用来检查工具条、勾选框和 `隐藏选中` 流程是否会卡住页面。
