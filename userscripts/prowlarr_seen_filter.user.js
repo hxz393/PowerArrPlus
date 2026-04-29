@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.3
+// @version      0.1.4
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -297,6 +297,7 @@
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.className = "powerarr-plus-checkbox";
+      checkbox.dataset.powerarrPlusFingerprint = fingerprint;
       checkbox.title = "选中后可加入隐藏过滤";
       checkbox.checked = state.selected.has(fingerprint);
       checkbox.addEventListener("change", () => {
@@ -306,6 +307,12 @@
           state.selected.delete(fingerprint);
         }
         updateStatus();
+      });
+      checkbox.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      checkbox.addEventListener("mousedown", (event) => {
+        event.stopPropagation();
       });
       injectCell(row, checkbox);
     }
@@ -363,6 +370,28 @@
     return Array.from(fingerprints).filter(Boolean);
   }
 
+  function checkedFingerprints() {
+    const fingerprints = new Set(state.selected);
+    document.querySelectorAll(".powerarr-plus-checkbox:checked").forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLElement)) {
+        return;
+      }
+
+      const direct = checkbox.dataset.powerarrPlusFingerprint;
+      if (direct) {
+        fingerprints.add(direct);
+        return;
+      }
+
+      const row = checkbox.closest("[data-powerarr-plus-fingerprint]");
+      if (row instanceof HTMLElement && row.dataset.powerarrPlusFingerprint) {
+        fingerprints.add(row.dataset.powerarrPlusFingerprint);
+      }
+    });
+
+    return Array.from(fingerprints).filter(Boolean);
+  }
+
   function makeButton(text, onClick) {
     const button = document.createElement("button");
     button.type = "button";
@@ -396,7 +425,7 @@
 
       toolbar.appendChild(
         makeButton("隐藏选中", async () => {
-          await hideFingerprints(Array.from(state.selected));
+          await hideFingerprints(checkedFingerprints());
         })
       );
 
