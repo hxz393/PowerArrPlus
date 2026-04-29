@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  powerarrplus:
+    build:
+      context: .
+    image: powerarrplus:latest
+    container_name: powerarrplus
+    environment:
+      POWERARR_PLUS_BIND: "0.0.0.0"
+      POWERARR_PLUS_PORT: "17896"
+      POWERARR_PLUS_REDIS_HOST: "192.168.2.204"
+      POWERARR_PLUS_REDIS_PORT: "6379"
+      POWERARR_PLUS_KEY_PREFIX: "powerarr_plus:prowlarr_seen_filter"
+      POWERARR_PLUS_ALLOW_ORIGIN: "*"
+    ports:
+      - "17896:17896"
+    restart: unless-stopped

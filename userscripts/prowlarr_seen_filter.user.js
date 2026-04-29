@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.16
+// @version      0.1.17
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -14,7 +14,7 @@
 
   const SERVICE_ORIGIN =
     window.localStorage.getItem("powerarrPlusServiceOrigin") ||
-    "http://127.0.0.1:17896";
+    "http://192.168.2.204:17896";
 
   const state = {
     lastVisible: [],
