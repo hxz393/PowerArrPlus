@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.23
+// @version      0.1.24
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -1374,18 +1374,6 @@
       const title = document.createElement("strong");
       title.textContent = "Seen Filter";
       toolbar.appendChild(title);
-
-      toolbar.appendChild(
-        makeButton("全选结果", async () => {
-          setCurrentPageSelected(true);
-        })
-      );
-
-      toolbar.appendChild(
-        makeButton("清空选择", async () => {
-          setCurrentPageSelected(false);
-        })
-      );
 
       toolbar.appendChild(
         makeButton("隐藏选中", async () => {

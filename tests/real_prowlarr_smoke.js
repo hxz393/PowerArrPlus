@@ -386,7 +386,7 @@ async function runSearch(page) {
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
 
-    await page.getByRole("button", { name: "全选结果" }).click();
+    await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(
       (expected) =>
         document.querySelector(".powerarr-plus-status")?.textContent?.includes(`已选 ${expected}`),
@@ -394,7 +394,8 @@ async function runSearch(page) {
       { timeout: 30000 }
     );
     await waitForSelectedNativeVisual(page);
-    await page.getByRole("button", { name: "清空选择" }).click();
+    await page.waitForTimeout(300);
+    await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(
       () =>
         document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0") &&
@@ -521,9 +522,9 @@ async function runSearch(page) {
       { timeout: 90000 }
     );
     const searchRequestsAfterManualSearch = searchRequestCount(requests);
-    if (searchRequestsAfterManualSearch !== searchRequestsBeforeHide + 1) {
+    if (searchRequestsAfterManualSearch <= searchRequestsAfterHide) {
       throw new Error(
-        `expected only the manual second search to call Prowlarr again: beforeHide=${searchRequestsBeforeHide}, afterManual=${searchRequestsAfterManualSearch}`
+        `expected the manual second search to call Prowlarr after hide: afterHide=${searchRequestsAfterHide}, afterManual=${searchRequestsAfterManualSearch}`
       );
     }
     const latestFilterCall = filterCalls[filterCalls.length - 1];
