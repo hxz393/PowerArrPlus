@@ -251,6 +251,12 @@
       ];
 
       const hiddenFingerprints = new Set();
+      const hideRequests = [];
+      window.__powerArrPlusHarness = {
+        sampleReleases,
+        hiddenFingerprints,
+        hideRequests
+      };
 
       function fingerprintRelease(release) {
         return `harness:${release.indexerId || ""}:${release.guid || release.title || ""}`;
@@ -356,6 +362,14 @@
         if (url.pathname === "/api/hide") {
           const payload = JSON.parse((init && init.body) || "{}");
           const releases = payload.releases || [];
+          hideRequests.push(
+            releases.map((release) => ({
+              guid: release.guid,
+              title: release.title,
+              indexer: release.indexer,
+              fingerprint: release._seenFilterFingerprint
+            }))
+          );
           releases.forEach((release) => {
             hiddenFingerprints.add(release._seenFilterFingerprint || fingerprintRelease(release));
           });

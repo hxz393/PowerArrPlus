@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      0.1.18
+// @version      0.1.19
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
 // @match        http://127.0.0.1:9696/*
@@ -308,7 +308,7 @@
   }
 
   function comparableText(value) {
-    return String(value || "")
+    return decodeHtmlEntities(value)
       .toLowerCase()
       .replace(/\s+/g, " ")
       .trim();
@@ -316,7 +316,7 @@
 
   function decodeHtmlEntities(value) {
     const textarea = document.createElement("textarea");
-    textarea.innerHTML = String(value || "");
+    textarea.innerHTML = String(value || "").replace(/&(\d+);/g, "&#$1;");
     return textarea.value;
   }
 
@@ -354,6 +354,43 @@
   function numericGrabs(release) {
     const grabs = Number(release && release.grabs);
     return Number.isFinite(grabs) ? grabs : 0;
+  }
+
+  function compactDecimal(value) {
+    return value.toFixed(1).replace(/\.0$/, "");
+  }
+
+  function sizeNeedles(size) {
+    const value = Number(size);
+    if (!Number.isFinite(value) || value <= 0) {
+      return [];
+    }
+
+    const needles = [];
+    const units = [
+      [1024 ** 4, "TiB"],
+      [1024 ** 3, "GiB"],
+      [1024 ** 2, "MiB"],
+      [1024, "KiB"],
+    ];
+    for (const [divisor, label] of units) {
+      if (value >= divisor) {
+        needles.push(comparableText(`${compactDecimal(value / divisor)} ${label}`));
+        needles.push(comparableText(`${compactDecimal(value / divisor)}${label}`));
+        break;
+      }
+    }
+    needles.push(comparableText(String(size)));
+    return Array.from(new Set(needles.filter(Boolean)));
+  }
+
+  function rowHasNumberToken(rowText, value) {
+    if (!hasStrictValue(value)) {
+      return false;
+    }
+
+    const token = String(value).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|\\D)${token}(\\D|$)`).test(rowText);
   }
 
   function dedupeReleases(releases) {
@@ -481,6 +518,27 @@
       score += 1000 + indexer.length;
     }
 
+    const sizeMatches = sizeNeedles(release.size).some((needle) => rowText.includes(needle));
+    if (sizeMatches) {
+      score += 500;
+    }
+
+    if (rowHasNumberToken(rowText, release.files)) {
+      score += 250;
+    }
+
+    if (
+      hasStrictValue(release.age) &&
+      (rowText.includes(comparableText(`${release.age} days`)) ||
+        rowHasNumberToken(rowText, release.age))
+    ) {
+      score += 150;
+    }
+
+    if (rowHasNumberToken(rowText, numericGrabs(release))) {
+      score += 100;
+    }
+
     const protocol = comparableText(release.protocol);
     if (protocol && rowText.includes(protocol)) {
       score += 50;
@@ -489,7 +547,7 @@
     return score;
   }
 
-  function findReleaseForRow(row, used) {
+  function findReleaseForRow(row, used, preferredFingerprint) {
     const rowText = resultText(row);
     let best = null;
     let bestScore = 0;
@@ -501,7 +559,13 @@
       }
 
       const score = releaseMatchScore(rowText, release);
-      if (score > bestScore) {
+      if (
+        score > bestScore ||
+        (score === bestScore &&
+          score > 0 &&
+          preferredFingerprint &&
+          fingerprint === preferredFingerprint)
+      ) {
         best = release;
         bestScore = score;
       }
@@ -510,25 +574,34 @@
     return best;
   }
 
+  function assignReleaseToRow(row, used) {
+    const previousFingerprint = row.dataset.powerarrPlusFingerprint;
+    const release = findReleaseForRow(row, used, previousFingerprint);
+    if (!release || !release._seenFilterFingerprint) {
+      delete row.dataset.powerarrPlusFingerprint;
+      row.classList.remove("powerarr-plus-row", "powerarr-plus-selected");
+      return null;
+    }
+
+    const fingerprint = release._seenFilterFingerprint;
+    row.dataset.powerarrPlusFingerprint = fingerprint;
+    rowReleaseByFingerprint.set(fingerprint, release);
+    row.classList.add("powerarr-plus-row");
+
+    row.querySelectorAll(".powerarr-plus-checkbox").forEach((checkbox) => {
+      checkbox.dataset.powerarrPlusFingerprint = fingerprint;
+      checkbox.checked = state.selected.has(fingerprint);
+      checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
+    });
+
+    used.add(fingerprint);
+    return release;
+  }
+
   function syncResultRows() {
     const used = new Set();
     for (const row of rowCandidates()) {
-      const existingFingerprint = row.dataset.powerarrPlusFingerprint;
-      if (existingFingerprint) {
-        used.add(existingFingerprint);
-        continue;
-      }
-
-      const release = findReleaseForRow(row, used);
-      if (!release || !release._seenFilterFingerprint) {
-        continue;
-      }
-
-      const fingerprint = release._seenFilterFingerprint;
-      used.add(fingerprint);
-      row.dataset.powerarrPlusFingerprint = fingerprint;
-      rowReleaseByFingerprint.set(fingerprint, release);
-      row.classList.add("powerarr-plus-row");
+      assignReleaseToRow(row, used);
     }
   }
 
@@ -550,8 +623,8 @@
   }
 
   function nativeSelectionFingerprints() {
+    syncNativeSelectionFromDom();
     const fingerprints = new Set();
-    const used = new Set();
 
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
@@ -566,19 +639,44 @@
         return;
       }
 
-      let fingerprint = row.dataset.powerarrPlusFingerprint;
-      if (!fingerprint) {
-        const release = findReleaseForRow(row, used);
-        fingerprint = release && release._seenFilterFingerprint;
-      }
+      const fingerprint = row.dataset.powerarrPlusFingerprint;
 
-      if (fingerprint) {
-        used.add(fingerprint);
+      if (fingerprint && !state.currentPageActionHiddenFingerprints.has(fingerprint)) {
         fingerprints.add(fingerprint);
       }
     });
 
     return Array.from(fingerprints);
+  }
+
+  function syncNativeSelectionFromDom() {
+    syncResultRows();
+    document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      if (!(checkbox instanceof HTMLInputElement)) {
+        return;
+      }
+      if (checkbox.closest(".powerarr-plus-toolbar") || checkbox.classList.contains("powerarr-plus-checkbox")) {
+        return;
+      }
+
+      const row = releaseRowForNativeCheckbox(checkbox);
+      if (!(row instanceof HTMLElement)) {
+        return;
+      }
+
+      const fingerprint = row.dataset.powerarrPlusFingerprint;
+      if (!fingerprint) {
+        return;
+      }
+
+      const selected = checkbox.checked && !state.currentPageActionHiddenFingerprints.has(fingerprint);
+      if (selected) {
+        state.selected.add(fingerprint);
+      } else {
+        state.selected.delete(fingerprint);
+      }
+      row.classList.toggle("powerarr-plus-selected", selected);
+    });
   }
 
   function bindNativeSelectionControls() {
@@ -598,6 +696,7 @@
 
       checkbox.dataset.powerarrPlusNativeBound = "1";
       checkbox.addEventListener("change", () => {
+        syncNativeSelectionFromDom();
         window.setTimeout(updateStatus, 0);
       });
     });
@@ -688,28 +787,22 @@
     syncResultRows();
     bindNativeSelectionControls();
     if (hasNativeSelectionControls()) {
+      syncNativeSelectionFromDom();
       updateStatus();
       return;
     }
 
     const used = new Set();
     for (const row of rowCandidates()) {
-      const existingFingerprint = row.dataset.powerarrPlusFingerprint;
-      if (existingFingerprint) {
-        used.add(existingFingerprint);
-        continue;
-      }
-
-      const release = findReleaseForRow(row, used);
+      const release = assignReleaseToRow(row, used);
       if (!release || !release._seenFilterFingerprint) {
         continue;
       }
 
-      const fingerprint = release._seenFilterFingerprint;
-      used.add(fingerprint);
-      row.dataset.powerarrPlusFingerprint = fingerprint;
-      rowReleaseByFingerprint.set(fingerprint, release);
-      row.classList.add("powerarr-plus-row");
+      const fingerprint = row.dataset.powerarrPlusFingerprint;
+      if (row.querySelector(":scope .powerarr-plus-checkbox")) {
+        continue;
+      }
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -789,11 +882,14 @@
       state.selected.delete(fingerprint);
       state.currentPageActionHiddenFingerprints.add(fingerprint);
     }
+    state.selected.clear();
     document.querySelectorAll('input[type="checkbox"]:checked').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement) || checkbox.closest(".powerarr-plus-toolbar")) {
         return;
       }
       checkbox.checked = false;
+      checkbox.dispatchEvent(new Event("input", { bubbles: true }));
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const message = `已隐藏 ${result.hiddenCount || releases.length} 条，下次搜索时隐藏`;
     updateStatus(message);

@@ -107,12 +107,57 @@ function visibleHarnessRowsScript() {
       { timeout: 30000 }
     );
 
+    await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("#results [role='gridcell']"));
+      const row = rows.find((candidate) =>
+        (candidate.innerText || candidate.textContent || "").includes("Digital Carnage")
+      );
+      if (!row) {
+        throw new Error("expected a Digital Carnage row to simulate virtual row reuse");
+      }
+
+      const checkbox = row.querySelector("input[type='checkbox']");
+      if (!checkbox || !checkbox.checked) {
+        throw new Error("expected the Digital Carnage row to be selected before reuse");
+      }
+
+      const cells = Array.from(row.children);
+      checkbox.checked = false;
+      cells[1].innerHTML = '<span class="protocol">nzb</span>';
+      cells[2].textContent = "582 days";
+      cells[3].innerHTML =
+        '<a href="#">Vaxxed.From.Cover-Up.to.Catastrophe.2016.1080p.AMZN.WEBRip.DDP2.0.x264-SiGMA</a>';
+      cells[4].textContent = "SceneNZBs";
+      cells[5].textContent = "4.7 GiB";
+      cells[6].textContent = "0";
+      cells[7].textContent = "";
+      cells[8].innerHTML = '<span class="category">Movies/HD</span>';
+    });
+    await page.waitForTimeout(500);
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),
+      null,
+      { timeout: 30000 }
+    );
+
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已隐藏 2 条，下次搜索时隐藏"),
       null,
       { timeout: 30000 }
     );
+    const lastHideRequest = await page.evaluate(() => {
+      const requests = window.__powerArrPlusHarness?.hideRequests || [];
+      return requests[requests.length - 1] || [];
+    });
+    if (
+      !lastHideRequest.some((release) => release.indexer === "Digital Carnage") ||
+      lastHideRequest.some((release) => release.indexer === "SceneNZBs")
+    ) {
+      throw new Error(
+        `expected virtual row reuse to preserve the originally selected Digital Carnage release, got ${JSON.stringify(lastHideRequest)}`
+      );
+    }
     const afterHideVisible = await page.evaluate(visibleHarnessRowsScript);
     if (afterHideVisible !== beforeVisible) {
       throw new Error(

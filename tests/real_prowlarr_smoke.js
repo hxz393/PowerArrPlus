@@ -14,6 +14,7 @@ const SERVICE_ORIGIN = "http://127.0.0.1:18081";
 const userscript = fs.readFileSync(USERSCRIPT_PATH, "utf8");
 const hiddenFingerprints = new Set();
 const filterCalls = [];
+const hideCalls = [];
 
 function fingerprintRelease(release) {
   return `real-smoke:${release.indexerId || ""}:${release.guid || release.title || ""}`;
@@ -39,7 +40,7 @@ function visibleResultCountScript() {
       return false;
     }
     const text = (element.innerText || element.textContent || "").trim();
-    if (!text || !text.includes("Vaxxed")) {
+    if (!text || !element.querySelector('input[type="checkbox"]')) {
       return false;
     }
     const style = window.getComputedStyle(element);
@@ -107,6 +108,70 @@ function assertNoVirtualRowGaps(stats, label) {
   if (stats.count > 1 && stats.maxGap > 1) {
     throw new Error(`${label} still has virtual row gaps: ${JSON.stringify(stats)}`);
   }
+}
+
+function firstSelectableResultScript() {
+  const allRows = Array.from(document.querySelectorAll("[role='gridcell'], tr"));
+  const rows = allRows.filter(
+    (row) =>
+      !row.closest(".powerarr-plus-toolbar") &&
+      row.querySelector('input[type="checkbox"]') &&
+      row.querySelector("a[href]") &&
+      (row.innerText || row.textContent || "").trim()
+  );
+  const row = rows.find((candidate) => {
+    const checkbox = candidate.querySelector('input[type="checkbox"]');
+    return checkbox && !checkbox.checked;
+  });
+  if (!row) {
+    return null;
+  }
+
+  const checkbox = row.querySelector('input[type="checkbox"]');
+  const link = row.querySelector("a[href]");
+  const title = (link?.innerText || link?.textContent || row.innerText || "").trim();
+  return {
+    index: allRows.indexOf(row),
+    title,
+    text: (row.innerText || row.textContent || "").trim(),
+  };
+}
+
+async function clickFirstSelectableResult(page) {
+  const result = await page.evaluate(firstSelectableResultScript);
+  if (!result) {
+    return null;
+  }
+
+  await page
+    .locator("[role='gridcell'], tr")
+    .nth(result.index)
+    .locator('input[type="checkbox"]')
+    .first()
+    .click({ force: true });
+  return result;
+}
+
+function scrollSearchResultsScript() {
+  const firstRow = document.querySelector("[role='gridcell']");
+  let current = firstRow && firstRow.parentElement;
+  while (current && current !== document.body) {
+    if (current.scrollHeight > current.clientHeight + 120) {
+      current.scrollTop = Math.min(
+        current.scrollHeight - current.clientHeight,
+        current.scrollTop + Math.max(500, current.clientHeight)
+      );
+      return { scrolled: true, target: current.className || current.tagName };
+    }
+    current = current.parentElement;
+  }
+
+  const fallback = document.scrollingElement || document.documentElement;
+  fallback.scrollTop = Math.min(
+    fallback.scrollHeight - fallback.clientHeight,
+    fallback.scrollTop + Math.max(500, fallback.clientHeight)
+  );
+  return { scrolled: true, target: "document" };
 }
 
 async function runSearch(page) {
@@ -205,6 +270,13 @@ async function runSearch(page) {
 
     if (url.pathname === "/api/hide") {
       const releases = payload.releases || [];
+      hideCalls.push(
+        releases.map((release) => ({
+          title: release.title,
+          indexer: release.indexer,
+          fingerprint: release._seenFilterFingerprint || fingerprintRelease(release),
+        }))
+      );
       releases.forEach((release) => {
         hiddenFingerprints.add(
           release._seenFilterFingerprint || fingerprintRelease(release)
@@ -293,9 +365,24 @@ async function runSearch(page) {
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
 
-    await page.locator("[role='gridcell'] [class*='CheckInput-input']").first().click();
+    const firstSelected = await clickFirstSelectableResult(page);
+    if (!firstSelected) {
+      throw new Error("expected a selectable first result before scroll");
+    }
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),
+      null,
+      { timeout: 30000 }
+    );
+
+    await page.evaluate(scrollSearchResultsScript);
+    await page.waitForTimeout(1000);
+    const secondSelected = await clickFirstSelectableResult(page);
+    if (!secondSelected) {
+      throw new Error("expected a selectable result after scrolling");
+    }
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 2"),
       null,
       { timeout: 30000 }
     );
@@ -314,6 +401,20 @@ async function runSearch(page) {
     if (searchRequestsAfterHide !== searchRequestsBeforeHide) {
       throw new Error(
         `hide selected triggered a new Prowlarr search request: before=${searchRequestsBeforeHide}, after=${searchRequestsAfterHide}`
+      );
+    }
+    const latestHideCall = hideCalls[hideCalls.length - 1] || [];
+    if (latestHideCall.length < 2) {
+      throw new Error(
+        `expected hide selected across virtual scroll to include at least two releases, got ${JSON.stringify(latestHideCall)}`
+      );
+    }
+    if (
+      !latestHideCall.some((release) => release.title === firstSelected.title) ||
+      !latestHideCall.some((release) => release.title === secondSelected.title)
+    ) {
+      throw new Error(
+        `hide selected missed a scrolled selection: first=${JSON.stringify(firstSelected)}, second=${JSON.stringify(secondSelected)}, hide=${JSON.stringify(latestHideCall)}`
       );
     }
     const afterHideVisible = await page.evaluate(visibleResultCountScript);
@@ -401,6 +502,9 @@ async function runSearch(page) {
           searchRequestsAfterManualSearch,
           searchRequestsAfterUnhide,
           searchRequestsAfterUnhideSearch,
+          firstSelected,
+          secondSelected,
+          latestHideCall,
           initialDedupeHidden,
           initialStatus,
           latestFilterCall,
@@ -461,6 +565,7 @@ async function runSearch(page) {
           formState,
           requests,
           filterCalls,
+          hideCalls,
           bodyExcerpt: bodyText.slice(0, 600),
         },
         null,
