@@ -230,13 +230,48 @@ function visibleHarnessRowsScript() {
       );
     }
 
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "prowlarr",
+        JSON.stringify({ releases: { selectedFilterKey: 101 } })
+      );
+      Array.from(document.querySelectorAll("#results [role='gridcell']")).forEach((row) => {
+        const text = row.innerText || row.textContent || "";
+        row.style.display = text.toLowerCase().includes("sigma") ? "" : "none";
+      });
+      document.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("结果 1/"),
+      null,
+      { timeout: 30000 }
+    );
+
     await page.locator("#selectAll").click();
     await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 4"),
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),
       null,
       { timeout: 30000 }
     );
     await page.waitForTimeout(300);
+    await page.locator("#selectAll").click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 0"),
+      null,
+      { timeout: 30000 }
+    );
+
+    await page
+      .locator("#results [role='gridcell']", { hasText: "SiGMA" })
+      .locator("input[type='checkbox']")
+      .first()
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),
+      null,
+      { timeout: 30000 }
+    );
+
     await page.getByRole("button", { name: "隐藏选中" }).click();
     await page.waitForTimeout(1000);
     const statusAfterSelectAllHide = await page.locator(".powerarr-plus-status").textContent();
@@ -247,9 +282,12 @@ function visibleHarnessRowsScript() {
       const requests = window.__powerArrPlusHarness?.hideRequests || [];
       return requests[requests.length - 1] || [];
     });
-    if (selectAllHideRequest.length < 4) {
+    if (
+      selectAllHideRequest.length !== 1 ||
+      !selectAllHideRequest[0].title.includes("SiGMA")
+    ) {
       throw new Error(
-        `expected select-all hide to include the full visible result set, got ${JSON.stringify(selectAllHideRequest)}`
+        `expected filtered selection to hide only the matching result, got ${JSON.stringify(selectAllHideRequest)}`
       );
     }
 

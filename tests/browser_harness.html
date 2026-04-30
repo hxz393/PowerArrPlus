@@ -180,6 +180,11 @@
       </main>
     </div>
     <script>
+      window.Prowlarr = {
+        apiRoot: "/api/v1",
+        apiKey: "harness-api-key",
+        urlBase: ""
+      };
       window.localStorage.setItem("powerarrPlusServiceOrigin", window.location.origin);
 
       const sampleReleases = [
@@ -334,6 +339,25 @@
             new Response(JSON.stringify(sampleReleases), {
               headers: { "Content-Type": "application/json; charset=utf-8" }
             })
+          );
+        }
+        if (url.pathname === "/api/v1/customFilter") {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 101,
+                type: "releases",
+                label: "sigma",
+                filters: [
+                  {
+                    key: "title",
+                    value: ["sigma"],
+                    type: "contains"
+                  }
+                ]
+              }
+            ]),
+            { headers: { "Content-Type": "application/json; charset=utf-8" } }
           );
         }
         if (url.pathname === "/api/filter") {
