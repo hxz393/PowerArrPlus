@@ -400,7 +400,39 @@ async function runSearch(page) {
     }
     const quickFilterNeedle = quickFilterNeedleFromTitle(quickFilterProbe.title);
     const searchRequestsBeforeQuickFilter = searchRequestCount(requests);
-    await page.locator(".powerarr-plus-quick-filter").fill(quickFilterNeedle);
+    const quickFilterInput = page.locator(".powerarr-plus-quick-filter");
+    const slowNeedle = quickFilterNeedle.slice(0, Math.min(4, quickFilterNeedle.length));
+    await quickFilterInput.fill("");
+    await quickFilterInput.type(slowNeedle, { delay: 2000 });
+    await page.waitForFunction(
+      () => {
+        const status = document.querySelector(".powerarr-plus-status")?.textContent || "";
+        return /快筛\s+[1-9]\d*/.test(status) && /结果\s+[1-9]\d*\//.test(status);
+      },
+      null,
+      { timeout: 30000 }
+    );
+    const realSlowTypeUi = await page.evaluate(() => {
+      const input = document.querySelector(".powerarr-plus-quick-filter");
+      return {
+        active: document.activeElement === input,
+        selectionStart: input?.selectionStart,
+        selectionEnd: input?.selectionEnd,
+        valueLength: input?.value.length,
+        value: input?.value,
+      };
+    });
+    if (
+      realSlowTypeUi.value !== slowNeedle ||
+      !realSlowTypeUi.active ||
+      realSlowTypeUi.selectionStart !== realSlowTypeUi.valueLength ||
+      realSlowTypeUi.selectionEnd !== realSlowTypeUi.valueLength
+    ) {
+      throw new Error(
+        `real quick filter slow typing should keep the cursor stable, got ${JSON.stringify(realSlowTypeUi)}`
+      );
+    }
+    await quickFilterInput.fill(quickFilterNeedle);
     await page.waitForFunction(
       () => {
         const status = document.querySelector(".powerarr-plus-status")?.textContent || "";

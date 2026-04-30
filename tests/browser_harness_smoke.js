@@ -113,7 +113,63 @@ function visibleHarnessRowsScript() {
       );
     }
 
-    await page.locator(".powerarr-plus-quick-filter").fill("HANDJOB");
+    const quickFilter = page.locator(".powerarr-plus-quick-filter");
+    await quickFilter.fill("");
+    await quickFilter.type("flac", { delay: 2000 });
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("快筛"),
+      null,
+      { timeout: 30000 }
+    );
+    const slowTypeUi = await page.evaluate(() => {
+      const input = document.querySelector(".powerarr-plus-quick-filter");
+      return {
+        active: document.activeElement === input,
+        selectionStart: input?.selectionStart,
+        selectionEnd: input?.selectionEnd,
+        valueLength: input?.value.length,
+        value: input?.value,
+      };
+    });
+    if (
+      slowTypeUi.value !== "flac" ||
+      !slowTypeUi.active ||
+      slowTypeUi.selectionStart !== slowTypeUi.valueLength ||
+      slowTypeUi.selectionEnd !== slowTypeUi.valueLength
+    ) {
+      throw new Error(
+        `expected slow quick filter typing to keep the cursor stable, got ${JSON.stringify(slowTypeUi)}`
+      );
+    }
+
+    await quickFilter.fill("Vaxxed");
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("快筛"),
+      null,
+      { timeout: 30000 }
+    );
+    await quickFilter.type(" HANDJOB", { delay: 30 });
+    await page.waitForTimeout(3300);
+    const staleCursorUi = await page.evaluate(() => {
+      const input = document.querySelector(".powerarr-plus-quick-filter");
+      return {
+        active: document.activeElement === input,
+        selectionStart: input?.selectionStart,
+        selectionEnd: input?.selectionEnd,
+        valueLength: input?.value.length,
+        value: input?.value,
+      };
+    });
+    if (
+      !staleCursorUi.active ||
+      staleCursorUi.selectionStart !== staleCursorUi.valueLength ||
+      staleCursorUi.selectionEnd !== staleCursorUi.valueLength
+    ) {
+      throw new Error(
+        `expected stale quick filter replays not to move the cursor, got ${JSON.stringify(staleCursorUi)}`
+      );
+    }
+    await quickFilter.fill("HANDJOB");
     await page.waitForFunction(
       () =>
         document.querySelector(".powerarr-plus-status")?.textContent?.includes("结果 1/") &&

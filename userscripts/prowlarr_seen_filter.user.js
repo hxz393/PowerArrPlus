@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.1.1
+// @version      1.1.2
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -50,6 +50,7 @@
     transientStatusUntil: 0,
     quickFilterText: "",
     quickFilterTimer: null,
+    quickFilterRevision: 0,
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -1605,7 +1606,7 @@
     };
   }
 
-  function restoreFocusedInput(focusState) {
+  function restoreFocusedInput(focusState, options = {}) {
     if (!focusState || !(focusState.element instanceof HTMLInputElement)) {
       return;
     }
@@ -1615,6 +1616,7 @@
 
     focusState.element.focus({ preventScroll: true });
     if (
+      options.restoreSelection !== false &&
       focusState.selectionStart !== null &&
       focusState.selectionEnd !== null &&
       typeof focusState.element.setSelectionRange === "function"
@@ -1628,15 +1630,27 @@
 
   function refreshCurrentSearchFromReplay(releases = state.lastVisible.slice(), options = {}) {
     const focusState = options.preserveFocus ? captureFocusedInput() : null;
+    const restoreReplayFocus = () => {
+      if (
+        options.shouldRestoreFocus &&
+        !options.shouldRestoreFocus(focusState)
+      ) {
+        return;
+      }
+      restoreFocusedInput(focusState, {
+        restoreSelection: options.restoreSelection,
+      });
+    };
+
     armCurrentSearchReplay(releases);
     if (options.dispatchEnter !== false) {
       dispatchEnterSearch(queryInputElement());
     }
-    restoreFocusedInput(focusState);
+    restoreReplayFocus();
 
     window.setTimeout(() => {
       if (!state.searchReplay) {
-        restoreFocusedInput(focusState);
+        restoreReplayFocus();
         return;
       }
 
@@ -1644,7 +1658,7 @@
       if (button instanceof HTMLElement && !button.disabled) {
         button.click();
       }
-      restoreFocusedInput(focusState);
+      restoreReplayFocus();
     }, 80);
 
     window.setTimeout(() => {
@@ -1652,11 +1666,14 @@
         state.searchReplay = null;
         scheduleInjectCheckboxes();
       }
-      restoreFocusedInput(focusState);
+      restoreReplayFocus();
     }, 3000);
   }
 
-  function refreshCurrentSearchForQuickFilter() {
+  function refreshCurrentSearchForQuickFilter(revision = state.quickFilterRevision) {
+    if (revision !== state.quickFilterRevision) {
+      return;
+    }
     if (!state.lastVisible.length) {
       return;
     }
@@ -1665,12 +1682,16 @@
     refreshCurrentSearchFromReplay(scopedVisibleReleases(), {
       dispatchEnter: false,
       preserveFocus: true,
+      shouldRestoreFocus: () => revision === state.quickFilterRevision,
     });
   }
 
-  function scheduleQuickFilterRefresh(delay = 160) {
+  function scheduleQuickFilterRefresh(delay = 160, revision = state.quickFilterRevision) {
     window.clearTimeout(state.quickFilterTimer);
-    state.quickFilterTimer = window.setTimeout(refreshCurrentSearchForQuickFilter, delay);
+    state.quickFilterTimer = window.setTimeout(
+      () => refreshCurrentSearchForQuickFilter(revision),
+      delay
+    );
   }
 
   function setQuickFilterText(value) {
@@ -1680,6 +1701,8 @@
     }
 
     state.quickFilterText = next;
+    state.quickFilterRevision += 1;
+    state.searchReplay = null;
     state.transientStatusMessage = "";
     state.transientStatusUntil = 0;
     state.selected.clear();
