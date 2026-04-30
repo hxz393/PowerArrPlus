@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.0.1
+// @version      1.0.2
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -46,6 +46,8 @@
     customFilters: [],
     customFiltersLoadedAt: 0,
     customFiltersRequest: null,
+    transientStatusMessage: "",
+    transientStatusUntil: 0,
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -551,6 +553,15 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  function isElementDisplayed(element) {
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden";
+  }
+
   function prowlarrPersistedState() {
     try {
       const raw = window.localStorage.getItem("prowlarr");
@@ -752,22 +763,107 @@
     return fingerprints;
   }
 
-  function currentVisibleReleaseFingerprints() {
-    const filtered = activeFilteredReleaseFingerprints();
-    if (filtered) {
-      return filtered;
+  function parseNativeResultCount(text) {
+    const value = String(text || "").replace(/\s+/g, " ").trim();
+    if (!value) {
+      return null;
     }
 
-    if (activeReleaseFilterKey()) {
-      const assigned = assignedVisibleReleaseFingerprints();
-      if (assigned.length) {
-        return assigned;
+    const patterns = [
+      /找到\s*(\d+)\s*版本/,
+      /选中\s*\d+\s*中的\s*(\d+)\s*版本/,
+      /found\s*(\d+)\s*(?:release|result|version)s?/i,
+      /(\d+)\s*(?:release|result|version)s?\s*found/i,
+      /selected\s*\d+\s*of\s*(\d+)\s*(?:release|result|version)s?/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = value.match(pattern);
+      if (match) {
+        const count = Number(match[1]);
+        return Number.isFinite(count) ? count : null;
       }
     }
 
-    return state.lastVisible
-      .map((release) => release && release._seenFilterFingerprint)
-      .filter(Boolean);
+    return null;
+  }
+
+  function nativeTableResultCount() {
+    const selectors = [
+      "#resultCount",
+      "[class*='SearchFooter']",
+      "[class*='searchFooter']",
+      "[class*='Footer']",
+      "[class*='footer']",
+      "footer",
+    ];
+    const candidates = new Set();
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((element) => {
+        if (element instanceof HTMLElement && !element.closest(".powerarr-plus-toolbar")) {
+          candidates.add(element);
+        }
+      });
+    }
+    document.querySelectorAll("div, span").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest(".powerarr-plus-toolbar")) {
+        return;
+      }
+      const text = element.innerText || element.textContent || "";
+      if (text.length <= 120 && parseNativeResultCount(text) !== null) {
+        candidates.add(element);
+      }
+    });
+
+    for (const element of candidates) {
+      if (!isElementDisplayed(element)) {
+        continue;
+      }
+      const text = element.innerText || element.textContent || "";
+      if (text.length > 500) {
+        continue;
+      }
+      const count = parseNativeResultCount(text);
+      if (count !== null) {
+        return count;
+      }
+    }
+
+    return null;
+  }
+
+  function nativeTableFilteredFingerprints(preferredFingerprints) {
+    const nativeCount = nativeTableResultCount();
+    if (nativeCount === null || nativeCount >= preferredFingerprints.length) {
+      return null;
+    }
+
+    const assigned = assignedVisibleReleaseFingerprints();
+    if (!assigned.length) {
+      return [];
+    }
+
+    if (assigned.length <= nativeCount) {
+      return assigned;
+    }
+
+    return assigned.slice(0, nativeCount);
+  }
+
+  function currentVisibleReleaseFingerprints() {
+    const filtered =
+      activeFilteredReleaseFingerprints() ||
+      state.lastVisible
+        .map((release) => release && release._seenFilterFingerprint)
+        .filter(Boolean);
+
+    const nativeFiltered = nativeTableFilteredFingerprints(filtered);
+    if (nativeFiltered) {
+      return nativeFiltered;
+    }
+
+    return filtered;
   }
 
   function hasNestedGridResults(element) {
@@ -1541,15 +1637,11 @@
   }
 
   function currentVisibleFingerprints() {
-    const fingerprints = new Set(
-      state.lastVisible
-        .map((release) => release && release._seenFilterFingerprint)
-        .filter(Boolean)
-    );
+    const fingerprints = new Set(currentVisibleReleaseFingerprints());
     document
       .querySelectorAll("[data-powerarr-plus-fingerprint]")
       .forEach((row) => {
-        if (row instanceof HTMLElement && row.style.display !== "none") {
+        if (row instanceof HTMLElement && isElementVisible(row)) {
           fingerprints.add(row.dataset.powerarrPlusFingerprint);
         }
       });
@@ -1690,9 +1782,18 @@
     }
 
     if (message) {
+      state.transientStatusMessage = message;
+      state.transientStatusUntil = Date.now() + 1500;
       state.statusEl.textContent = message;
       return;
     }
+
+    if (state.transientStatusMessage && Date.now() < state.transientStatusUntil) {
+      state.statusEl.textContent = state.transientStatusMessage;
+      return;
+    }
+    state.transientStatusMessage = "";
+    state.transientStatusUntil = 0;
 
     if (state.serviceOk === false) {
       state.statusEl.textContent = "过滤服务离线";
@@ -1827,7 +1928,13 @@
       }
       scheduleInjectCheckboxes();
     });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class", "hidden", "aria-hidden"],
+      characterData: true,
+    });
     window.addEventListener("resize", placeToolbar);
     window.addEventListener("scroll", placeToolbar, true);
     document.addEventListener(

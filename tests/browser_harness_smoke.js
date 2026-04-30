@@ -233,6 +233,52 @@ function visibleHarnessRowsScript() {
     await page.evaluate(() => {
       window.localStorage.setItem(
         "prowlarr",
+        JSON.stringify({ releases: { selectedFilterKey: "all" } })
+      );
+      Array.from(document.querySelectorAll("#results [role='gridcell']")).forEach((row) => {
+        const text = row.innerText || row.textContent || "";
+        row.style.display = text.includes("HANDJOB") ? "" : "none";
+      });
+      document.getElementById("resultCount").textContent = "找到1版本";
+      document.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await page.locator("#selectAll").click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),
+      null,
+      { timeout: 30000 }
+    );
+    await page.getByRole("button", { name: "隐藏选中" }).click();
+    await page.waitForTimeout(1000);
+    const tableFilterHideRequest = await page.evaluate(() => {
+      const requests = window.__powerArrPlusHarness?.hideRequests || [];
+      return requests[requests.length - 1] || [];
+    });
+    if (
+      tableFilterHideRequest.length !== 1 ||
+      !tableFilterHideRequest[0].title.includes("HANDJOB")
+    ) {
+      throw new Error(
+        `expected native table filter selection to hide only HANDJOB, got ${JSON.stringify(tableFilterHideRequest)}`
+      );
+    }
+
+    await page.getByRole("button", { name: "取消本页已隐藏" }).click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已取消本页已隐藏 1 条"),
+      null,
+      { timeout: 30000 }
+    );
+    await page.getByRole("button", { name: "搜索" }).click();
+    await page.waitForFunction(
+      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已过滤 0"),
+      null,
+      { timeout: 30000 }
+    );
+
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "prowlarr",
         JSON.stringify({ releases: { selectedFilterKey: 101 } })
       );
       Array.from(document.querySelectorAll("#results [role='gridcell']")).forEach((row) => {
