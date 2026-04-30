@@ -96,6 +96,23 @@ function visibleHarnessRowsScript() {
       throw new Error(`expected 4 visible deduped rows, got ${beforeVisible}`);
     }
 
+    await page.locator("#results .saveAddButton").first().click();
+    await page.waitForFunction(
+      () => window.__powerArrPlusHarness?.saveClicks === 1,
+      null,
+      { timeout: 30000 }
+    );
+    const statusAfterSaveClick = await page.locator(".powerarr-plus-status").textContent();
+    const checkedAfterSaveClick = await page.locator("#results input[type='checkbox']:checked").count();
+    if (
+      checkedAfterSaveClick !== 0 ||
+      !String(statusAfterSaveClick || "").includes("已选 0")
+    ) {
+      throw new Error(
+        `expected save/add row action not to toggle selection, checked=${checkedAfterSaveClick}, status=${statusAfterSaveClick}`
+      );
+    }
+
     await page.locator("#selectAll").click();
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 4"),

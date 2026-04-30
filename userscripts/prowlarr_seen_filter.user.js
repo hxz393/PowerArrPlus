@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.0.2
+// @version      1.0.3
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -1215,10 +1215,6 @@
         current = current.parentElement;
         depth += 1;
       }
-    }
-    if (!(checkbox instanceof HTMLInputElement)) {
-      const row = target.closest("[data-powerarr-plus-fingerprint]");
-      checkbox = row && row.querySelector('input[type="checkbox"]');
     }
     if (!(checkbox instanceof HTMLInputElement)) {
       return null;

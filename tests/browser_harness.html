@@ -260,7 +260,8 @@
       window.__powerArrPlusHarness = {
         sampleReleases,
         hiddenFingerprints,
-        hideRequests
+        hideRequests,
+        saveClicks: 0
       };
 
       function fingerprintRelease(release) {
@@ -446,7 +447,7 @@
             release.indexer,
             formatBytes(release.size),
             String(release.grabs || 0),
-            "",
+            '<button type="button" class="saveAddButton">保存添加</button>',
             release.categories.map((category) => `<span class="category">${category.name}</span>`).join("")
           ];
 
@@ -475,6 +476,11 @@
       });
 
       document.getElementById("results").addEventListener("change", updateGrabState);
+      document.getElementById("results").addEventListener("click", (event) => {
+        if (event.target.closest(".saveAddButton")) {
+          window.__powerArrPlusHarness.saveClicks += 1;
+        }
+      });
 
       document.getElementById("searchButton").addEventListener("click", async () => {
         const query = encodeURIComponent(document.getElementById("query").value);
