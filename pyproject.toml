@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "powerarr-plus"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local companion tools for Prowlarr and other Arr services."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-  { name = "PowerArrPlus Maintainers" }
+  { name = "hxz393" }
 ]
 dependencies = []
 
@@ -19,4 +19,3 @@ powerarr-plus-seen-filter = "powerarr_plus.seen_filter_service:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

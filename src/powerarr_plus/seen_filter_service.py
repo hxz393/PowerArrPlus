@@ -287,7 +287,7 @@ def extract_releases(payload: Any) -> list[dict[str, Any]]:
 
 def make_handler(store: SeenStore, allow_origin: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        server_version = "PowerArrPlus/0.1"
+        server_version = "PowerArrPlus/1.0.0"
 
         def do_OPTIONS(self) -> None:
             self.send_response(HTTPStatus.NO_CONTENT)
