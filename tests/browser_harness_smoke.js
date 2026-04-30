@@ -123,6 +123,27 @@ function visibleHarnessRowsScript() {
       null,
       { timeout: 30000 }
     );
+    const quickFilterUi = await page.evaluate(() => {
+      const input = document.querySelector(".powerarr-plus-quick-filter");
+      const toolbar = document.querySelector(".powerarr-plus-toolbar");
+      return {
+        active: document.activeElement === input,
+        selectionStart: input?.selectionStart,
+        selectionEnd: input?.selectionEnd,
+        valueLength: input?.value.length,
+        toolbarWidth: Math.round(toolbar?.getBoundingClientRect().width || 0),
+      };
+    });
+    if (
+      !quickFilterUi.active ||
+      quickFilterUi.selectionStart !== quickFilterUi.valueLength ||
+      quickFilterUi.selectionEnd !== quickFilterUi.valueLength ||
+      quickFilterUi.toolbarWidth !== 880
+    ) {
+      throw new Error(
+        `expected quick filter to keep focus and fixed toolbar width, got ${JSON.stringify(quickFilterUi)}`
+      );
+    }
     await page.locator("#selectAll").click();
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已选 1"),

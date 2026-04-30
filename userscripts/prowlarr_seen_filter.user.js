@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.1.0
+// @version      1.1.1
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -1592,12 +1592,51 @@
     );
   }
 
-  function refreshCurrentSearchFromReplay(releases = state.lastVisible.slice()) {
+  function captureFocusedInput() {
+    const element = document.activeElement;
+    if (!(element instanceof HTMLInputElement)) {
+      return null;
+    }
+
+    return {
+      element,
+      selectionStart: element.selectionStart,
+      selectionEnd: element.selectionEnd,
+    };
+  }
+
+  function restoreFocusedInput(focusState) {
+    if (!focusState || !(focusState.element instanceof HTMLInputElement)) {
+      return;
+    }
+    if (!document.contains(focusState.element)) {
+      return;
+    }
+
+    focusState.element.focus({ preventScroll: true });
+    if (
+      focusState.selectionStart !== null &&
+      focusState.selectionEnd !== null &&
+      typeof focusState.element.setSelectionRange === "function"
+    ) {
+      focusState.element.setSelectionRange(
+        focusState.selectionStart,
+        focusState.selectionEnd
+      );
+    }
+  }
+
+  function refreshCurrentSearchFromReplay(releases = state.lastVisible.slice(), options = {}) {
+    const focusState = options.preserveFocus ? captureFocusedInput() : null;
     armCurrentSearchReplay(releases);
-    dispatchEnterSearch(queryInputElement());
+    if (options.dispatchEnter !== false) {
+      dispatchEnterSearch(queryInputElement());
+    }
+    restoreFocusedInput(focusState);
 
     window.setTimeout(() => {
       if (!state.searchReplay) {
+        restoreFocusedInput(focusState);
         return;
       }
 
@@ -1605,6 +1644,7 @@
       if (button instanceof HTMLElement && !button.disabled) {
         button.click();
       }
+      restoreFocusedInput(focusState);
     }, 80);
 
     window.setTimeout(() => {
@@ -1612,6 +1652,7 @@
         state.searchReplay = null;
         scheduleInjectCheckboxes();
       }
+      restoreFocusedInput(focusState);
     }, 3000);
   }
 
@@ -1621,7 +1662,10 @@
     }
 
     rowReleaseByFingerprint.clear();
-    refreshCurrentSearchFromReplay(scopedVisibleReleases());
+    refreshCurrentSearchFromReplay(scopedVisibleReleases(), {
+      dispatchEnter: false,
+      preserveFocus: true,
+    });
   }
 
   function scheduleQuickFilterRefresh(delay = 160) {
@@ -1947,8 +1991,10 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        max-width: min(940px, calc(100vw - 32px));
-        margin: 0 8px;
+        width: min(880px, calc(100vw - 32px));
+        max-width: calc(100vw - 32px);
+        box-sizing: border-box;
+        margin: 0;
         padding: 3px 8px;
         border: 1px solid rgba(148, 163, 184, 0.55);
         border-radius: 6px;
@@ -1964,11 +2010,14 @@
       .powerarr-plus-toolbar.powerarr-plus-floating {
         right: 16px;
         bottom: 16px;
-        margin: 0;
         padding: 8px 10px;
         box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
       }
+      .powerarr-plus-toolbar strong {
+        flex: 0 0 auto;
+      }
       .powerarr-plus-toolbar button {
+        flex: 0 0 auto;
         border: 1px solid rgba(148, 163, 184, 0.55);
         border-radius: 4px;
         background: #1f2937;
@@ -1985,6 +2034,7 @@
         opacity: 0.6;
       }
       .powerarr-plus-quick-filter {
+        flex: 0 0 150px;
         width: 150px;
         min-width: 110px;
         height: 24px;
@@ -2004,6 +2054,9 @@
         color: #94a3b8;
       }
       .powerarr-plus-status {
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
         color: #cbd5e1;
       }
