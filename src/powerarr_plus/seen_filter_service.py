@@ -1,26 +1,32 @@
-"""Redis-backed local filter service for Prowlarr search results."""
+"""Local filter service for Prowlarr search results."""
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import json
 import os
 import re
 import socket
+import sqlite3
 import sys
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 17896
+DEFAULT_STORE = "sqlite"
+DEFAULT_DB_PATH = "data/powerarrplus.sqlite3"
 DEFAULT_REDIS_HOST = "127.0.0.1"
 DEFAULT_REDIS_PORT = 6379
 DEFAULT_KEY_PREFIX = "powerarr_plus:prowlarr_seen_filter"
+SQLITE_QUERY_CHUNK_SIZE = 900
 
 SENSITIVE_QUERY_KEYS = {
     "apikey",
@@ -179,15 +185,82 @@ def release_metadata(release: dict[str, Any], fingerprint: str) -> dict[str, Any
         "indexer": release.get("indexer"),
         "indexerId": release.get("indexerId"),
         "size": release.get("size"),
+        "files": release.get("files"),
         "protocol": release.get("protocol"),
         "publishDate": release.get("publishDate"),
+        "grabs": release.get("grabs"),
         "seeders": release.get("seeders"),
         "leechers": release.get("leechers"),
         "keyMaterialType": release_key_material(release).split(":", 1)[0],
     }
 
 
-class SeenStore:
+def chunked(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def metadata_column_values(metadata: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(metadata["fingerprint"]),
+        str(
+            metadata.get("hiddenAt")
+            or dt.datetime.now(dt.timezone.utc).isoformat()
+        ),
+        metadata.get("title"),
+        metadata.get("sortTitle"),
+        metadata.get("indexer"),
+        None if metadata.get("indexerId") is None else str(metadata.get("indexerId")),
+        optional_int(metadata.get("size")),
+        optional_int(metadata.get("files")),
+        metadata.get("keyMaterialType"),
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+    )
+
+
+def hidden_summary(
+    release: dict[str, Any], fingerprint: str
+) -> dict[str, Any]:
+    return {
+        "fingerprint": fingerprint,
+        "title": release.get("title"),
+        "indexer": release.get("indexer"),
+        "indexerId": release.get("indexerId"),
+        "size": release.get("size"),
+        "files": release.get("files"),
+    }
+
+
+class ReleaseStore(Protocol):
+    name: str
+
+    def ping(self) -> Any:
+        ...
+
+    def stats(self) -> dict[str, Any]:
+        ...
+
+    def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
+        ...
+
+    def hide_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
+        ...
+
+    def unhide(self, fingerprints: list[str]) -> dict[str, Any]:
+        ...
+
+
+class RedisSeenStore:
+    name = "redis"
+
     def __init__(self, redis: RedisClient, key_prefix: str) -> None:
         self.redis = redis
         self.hidden_key = f"{key_prefix}:hidden:v1"
@@ -208,15 +281,7 @@ class SeenStore:
         hidden: list[dict[str, Any]] = []
         for release, fingerprint, flag in zip(releases, fingerprints, hidden_flags):
             if int(flag) == 1:
-                hidden.append(
-                    {
-                        "fingerprint": fingerprint,
-                        "title": release.get("title"),
-                        "indexer": release.get("indexer"),
-                        "indexerId": release.get("indexerId"),
-                        "size": release.get("size"),
-                    }
-                )
+                hidden.append(hidden_summary(release, fingerprint))
             else:
                 copied = dict(release)
                 copied["_seenFilterFingerprint"] = fingerprint
@@ -262,6 +327,174 @@ class SeenStore:
         return {"unhiddenCount": len(fingerprints), "fingerprints": fingerprints}
 
 
+SeenStore = RedisSeenStore
+
+
+class SQLiteSeenStore:
+    name = "sqlite"
+
+    def __init__(self, db_path: str | os.PathLike[str]) -> None:
+        self.db_path = Path(db_path)
+        self._ensure_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        if str(self.db_path) != ":memory:":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        return conn
+
+    @contextmanager
+    def _connection(self) -> Any:
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _ensure_schema(self) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hidden_release (
+                    fingerprint TEXT PRIMARY KEY,
+                    hidden_at TEXT NOT NULL,
+                    title TEXT,
+                    sort_title TEXT,
+                    indexer TEXT,
+                    indexer_id TEXT,
+                    size INTEGER,
+                    files INTEGER,
+                    key_material_type TEXT,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hidden_release_hidden_at
+                ON hidden_release(hidden_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hidden_release_indexer_id
+                ON hidden_release(indexer_id)
+                """
+            )
+
+    def ping(self) -> str:
+        with self._connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return "OK"
+
+    def stats(self) -> dict[str, Any]:
+        with self._connection() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS count FROM hidden_release"
+            ).fetchone()["count"]
+        return {"hiddenCount": int(count)}
+
+    def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
+        fingerprints = [fingerprint_release(release) for release in releases]
+        hidden_fingerprints: set[str] = set()
+
+        if fingerprints:
+            with self._connection() as conn:
+                for batch in chunked(fingerprints, SQLITE_QUERY_CHUNK_SIZE):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = conn.execute(
+                        """
+                        SELECT fingerprint FROM hidden_release
+                        WHERE fingerprint IN (
+                        """
+                        + placeholders
+                        + ")",
+                        batch,
+                    ).fetchall()
+                    hidden_fingerprints.update(str(row["fingerprint"]) for row in rows)
+
+        visible: list[dict[str, Any]] = []
+        hidden: list[dict[str, Any]] = []
+        for release, fingerprint in zip(releases, fingerprints):
+            if fingerprint in hidden_fingerprints:
+                hidden.append(hidden_summary(release, fingerprint))
+            else:
+                copied = dict(release)
+                copied["_seenFilterFingerprint"] = fingerprint
+                visible.append(copied)
+
+        return {
+            "total": len(releases),
+            "visible": visible,
+            "hidden": hidden,
+            "hiddenCount": len(hidden),
+        }
+
+    def hide_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
+        hidden: list[dict[str, Any]] = []
+        for release in releases:
+            fingerprint = fingerprint_release(release)
+            hidden.append(release_metadata(release, fingerprint))
+
+        self.upsert_metadata_batch(hidden)
+        return {"hiddenCount": len(hidden), "hidden": hidden}
+
+    def upsert_metadata_batch(self, metadata_items: list[dict[str, Any]]) -> None:
+        if not metadata_items:
+            return
+
+        with self._connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO hidden_release (
+                    fingerprint,
+                    hidden_at,
+                    title,
+                    sort_title,
+                    indexer,
+                    indexer_id,
+                    size,
+                    files,
+                    key_material_type,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    hidden_at = excluded.hidden_at,
+                    title = excluded.title,
+                    sort_title = excluded.sort_title,
+                    indexer = excluded.indexer,
+                    indexer_id = excluded.indexer_id,
+                    size = excluded.size,
+                    files = excluded.files,
+                    key_material_type = excluded.key_material_type,
+                    metadata_json = excluded.metadata_json
+                """,
+                [metadata_column_values(metadata) for metadata in metadata_items],
+            )
+
+    def unhide(self, fingerprints: list[str]) -> dict[str, Any]:
+        clean = [str(fingerprint) for fingerprint in fingerprints]
+        if clean:
+            with self._connection() as conn:
+                for batch in chunked(clean, SQLITE_QUERY_CHUNK_SIZE):
+                    placeholders = ",".join("?" for _ in batch)
+                    conn.execute(
+                        "DELETE FROM hidden_release WHERE fingerprint IN ("
+                        + placeholders
+                        + ")",
+                        batch,
+                    )
+
+        return {"unhiddenCount": len(clean), "fingerprints": clean}
+
+
 def extract_releases(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         releases = payload
@@ -285,7 +518,114 @@ def extract_releases(payload: Any) -> list[dict[str, Any]]:
     return clean
 
 
-def make_handler(store: SeenStore, allow_origin: str) -> type[BaseHTTPRequestHandler]:
+def create_store(args: argparse.Namespace) -> ReleaseStore:
+    if args.store == "redis":
+        return RedisSeenStore(
+            RedisClient(args.redis_host, args.redis_port), args.key_prefix
+        )
+    if args.store == "sqlite":
+        return SQLiteSeenStore(args.db_path)
+    raise ValueError(f"unsupported store: {args.store}")
+
+
+def metadata_from_redis(
+    fingerprint: str, raw: Any, now_iso: str
+) -> tuple[dict[str, Any], str | None]:
+    if raw is None:
+        return (
+            {
+                "fingerprint": fingerprint,
+                "hiddenAt": now_iso,
+                "keyMaterialType": "unknown",
+            },
+            "missing",
+        )
+
+    try:
+        metadata = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return (
+            {
+                "fingerprint": fingerprint,
+                "hiddenAt": now_iso,
+                "keyMaterialType": "unknown",
+                "legacyMetadata": str(raw),
+            },
+            "invalid",
+        )
+
+    if not isinstance(metadata, dict):
+        return (
+            {
+                "fingerprint": fingerprint,
+                "hiddenAt": now_iso,
+                "keyMaterialType": "unknown",
+                "legacyMetadata": metadata,
+            },
+            "invalid",
+        )
+
+    metadata["fingerprint"] = str(metadata.get("fingerprint") or fingerprint)
+    metadata["hiddenAt"] = metadata.get("hiddenAt") or now_iso
+    return metadata, None
+
+
+def migrate_redis_to_sqlite(
+    redis_store: RedisSeenStore,
+    sqlite_store: SQLiteSeenStore,
+    batch_size: int,
+) -> dict[str, Any]:
+    batch_size = max(1, int(batch_size))
+    cursor = "0"
+    migrated = 0
+    missing_metadata = 0
+    invalid_metadata = 0
+
+    while True:
+        result = redis_store.redis.command(
+            "SSCAN", redis_store.hidden_key, cursor, "COUNT", batch_size
+        )
+        if not isinstance(result, list) or len(result) != 2:
+            raise RedisProtocolError("unexpected Redis SSCAN response")
+
+        cursor = str(result[0])
+        fingerprints = [str(fingerprint) for fingerprint in (result[1] or [])]
+        if fingerprints:
+            raw_metadata = redis_store.redis.pipeline(
+                [
+                    ("GET", f"{redis_store.meta_prefix}:{fingerprint}")
+                    for fingerprint in fingerprints
+                ]
+            )
+            now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+            metadata_batch: list[dict[str, Any]] = []
+            for fingerprint, raw in zip(fingerprints, raw_metadata):
+                metadata, problem = metadata_from_redis(fingerprint, raw, now_iso)
+                if problem == "missing":
+                    missing_metadata += 1
+                elif problem == "invalid":
+                    invalid_metadata += 1
+                metadata_batch.append(metadata)
+
+            sqlite_store.upsert_metadata_batch(metadata_batch)
+            migrated += len(metadata_batch)
+
+        if cursor == "0":
+            break
+
+    return {
+        "migrated": migrated,
+        "missingMetadata": missing_metadata,
+        "invalidMetadata": invalid_metadata,
+        "redisHiddenCount": redis_store.stats()["hiddenCount"],
+        "sqliteHiddenCount": sqlite_store.stats()["hiddenCount"],
+        "dbPath": str(sqlite_store.db_path),
+    }
+
+
+def make_handler(
+    store: ReleaseStore, allow_origin: str
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "PowerArrPlus/1.0.0"
 
@@ -298,9 +638,13 @@ def make_handler(store: SeenStore, allow_origin: str) -> type[BaseHTTPRequestHan
             try:
                 path = urllib.parse.urlsplit(self.path).path
                 if path in {"/health", "/api/health"}:
-                    result = {"ok": True, "redis": store.ping()}
+                    result = {
+                        "ok": True,
+                        "store": store.name,
+                        "status": store.ping(),
+                    }
                 elif path == "/api/stats":
-                    result = {"ok": True, **store.stats()}
+                    result = {"ok": True, "store": store.name, **store.stats()}
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
                     return
@@ -387,6 +731,17 @@ def self_test() -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--store",
+        choices=("sqlite", "redis"),
+        default=os.getenv("POWERARR_PLUS_STORE", DEFAULT_STORE),
+        help="persistent storage backend",
+    )
+    parser.add_argument(
+        "--db-path",
+        default=os.getenv("POWERARR_PLUS_DB_PATH", DEFAULT_DB_PATH),
+        help="SQLite database path when --store=sqlite",
+    )
     parser.add_argument("--bind", default=os.getenv("POWERARR_PLUS_BIND", DEFAULT_BIND))
     parser.add_argument(
         "--port",
@@ -412,6 +767,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--test-redis", action="store_true")
+    parser.add_argument("--test-store", action="store_true")
+    parser.add_argument(
+        "--migrate-redis-to-sqlite",
+        action="store_true",
+        help="copy hidden fingerprints and metadata from Redis into SQLite, then exit",
+    )
+    parser.add_argument(
+        "--migration-batch-size",
+        type=int,
+        default=int(os.getenv("POWERARR_PLUS_MIGRATION_BATCH_SIZE", "1000")),
+    )
     return parser.parse_args(argv)
 
 
@@ -422,19 +788,44 @@ def main(argv: list[str] | None = None) -> int:
         self_test()
         return 0
 
-    redis = RedisClient(args.redis_host, args.redis_port)
-    store = SeenStore(redis, args.key_prefix)
-
     if args.test_redis:
+        redis = RedisClient(args.redis_host, args.redis_port)
+        store = RedisSeenStore(redis, args.key_prefix)
         print(json.dumps({"redis": store.ping(), **store.stats()}, ensure_ascii=False))
+        return 0
+
+    if args.migrate_redis_to_sqlite:
+        redis_store = RedisSeenStore(
+            RedisClient(args.redis_host, args.redis_port), args.key_prefix
+        )
+        sqlite_store = SQLiteSeenStore(args.db_path)
+        result = migrate_redis_to_sqlite(
+            redis_store, sqlite_store, args.migration_batch_size
+        )
+        print(json.dumps({"ok": True, **result}, ensure_ascii=False))
+        return 0
+
+    store = create_store(args)
+
+    if args.test_store:
+        print(
+            json.dumps(
+                {"store": store.name, "status": store.ping(), **store.stats()},
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     handler = make_handler(store, args.allow_origin)
     server = ThreadingHTTPServer((args.bind, args.port), handler)
+    store_detail = (
+        f"db_path={args.db_path}"
+        if store.name == "sqlite"
+        else f"redis={args.redis_host}:{args.redis_port}; key_prefix={args.key_prefix}"
+    )
     print(
         f"listening on http://{args.bind}:{args.port}; "
-        f"redis={args.redis_host}:{args.redis_port}; "
-        f"key_prefix={args.key_prefix}",
+        f"store={store.name}; {store_detail}",
         flush=True,
     )
     server.serve_forever()

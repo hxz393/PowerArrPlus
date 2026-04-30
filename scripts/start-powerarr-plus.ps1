@@ -1,8 +1,12 @@
 param(
     [string]$Bind = "127.0.0.1",
     [int]$Port = 17896,
+    [ValidateSet("sqlite", "redis")]
+    [string]$Store = "sqlite",
+    [string]$DbPath = "",
     [string]$RedisHost = "127.0.0.1",
-    [int]$RedisPort = 6379
+    [int]$RedisPort = 6379,
+    [string]$KeyPrefix = "powerarr_plus:prowlarr_seen_filter"
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,13 +16,23 @@ $repoRoot = Split-Path -Parent $scriptDir
 $outDir = Join-Path $repoRoot "output"
 $healthUrl = "http://${Bind}:$Port/health"
 
+if (-not $DbPath) {
+    $DbPath = Join-Path $repoRoot "data\powerarrplus.sqlite3"
+}
+
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+if ($Store -eq "sqlite") {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DbPath) | Out-Null
+}
 
 $env:PYTHONPATH = Join-Path $repoRoot "src"
 $env:POWERARR_PLUS_BIND = $Bind
 $env:POWERARR_PLUS_PORT = "$Port"
+$env:POWERARR_PLUS_STORE = $Store
+$env:POWERARR_PLUS_DB_PATH = $DbPath
 $env:POWERARR_PLUS_REDIS_HOST = $RedisHost
 $env:POWERARR_PLUS_REDIS_PORT = "$RedisPort"
+$env:POWERARR_PLUS_KEY_PREFIX = $KeyPrefix
 
 $isRunning = $false
 try {

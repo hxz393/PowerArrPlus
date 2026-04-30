@@ -9,6 +9,8 @@ services:
     environment:
       POWERARR_PLUS_BIND: "0.0.0.0"
       POWERARR_PLUS_PORT: "${POWERARR_PLUS_PORT:-17896}"
+      POWERARR_PLUS_STORE: "${POWERARR_PLUS_STORE:-sqlite}"
+      POWERARR_PLUS_DB_PATH: "${POWERARR_PLUS_DB_PATH:-/data/powerarrplus.sqlite3}"
       POWERARR_PLUS_REDIS_HOST: "${POWERARR_PLUS_REDIS_HOST:-host.docker.internal}"
       POWERARR_PLUS_REDIS_PORT: "${POWERARR_PLUS_REDIS_PORT:-6379}"
       POWERARR_PLUS_KEY_PREFIX: "${POWERARR_PLUS_KEY_PREFIX:-powerarr_plus:prowlarr_seen_filter}"
@@ -17,4 +19,6 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "${POWERARR_PLUS_PORT:-17896}:17896"
+    volumes:
+      - ./data:/data
     restart: unless-stopped

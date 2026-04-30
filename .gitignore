@@ -10,6 +10,10 @@ build/
 output/
 .playwright-cli/
 logs/
+data/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
 *.log
 .env
 *.env
