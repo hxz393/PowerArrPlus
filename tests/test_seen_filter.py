@@ -15,6 +15,8 @@ from powerarr_plus.seen_filter_service import (
 
 class FakeRedisClient:
     def __init__(self) -> None:
+        self.host = "127.0.0.1"
+        self.port = 6379
         self.sets: dict[str, set[str]] = {}
         self.values: dict[str, str] = {}
 
@@ -120,7 +122,13 @@ class SeenFilterTests(unittest.TestCase):
 
             hide_result = store.hide_releases([release])
             self.assertEqual(hide_result["hiddenCount"], 1)
-            self.assertEqual(store.stats()["hiddenCount"], 1)
+            stats = store.stats()
+            self.assertEqual(stats["hiddenCount"], 1)
+            self.assertTrue(stats["dbExists"])
+            self.assertGreater(stats["dbSizeBytes"], 0)
+            self.assertEqual(stats["journalMode"], "wal")
+            self.assertIsNotNone(stats["newestHiddenAt"])
+            self.assertIn("sqliteVersion", stats)
 
             filter_result = store.filter_releases([release, other_release])
             self.assertEqual(filter_result["hiddenCount"], 1)

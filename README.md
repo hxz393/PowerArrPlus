@@ -86,6 +86,16 @@ Expected shape:
 {"ok": true, "store": "sqlite", "status": "OK"}
 ```
 
+Check database status:
+
+```bash
+curl -sS http://127.0.0.1:17896/api/stats
+```
+
+SQLite stats include `hiddenCount`, `dbPath`, `dbSizeBytes`, `walSizeBytes`,
+`totalSizeBytes`, `oldestHiddenAt`, `newestHiddenAt`, `sqliteVersion`,
+`journalMode`, `pageSize`, `pageCount`, and `freelistCount`.
+
 If the service runs on another machine, test it from the browser/Prowlarr
 machine:
 

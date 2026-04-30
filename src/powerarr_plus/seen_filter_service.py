@@ -208,6 +208,21 @@ def optional_int(value: Any) -> int | None:
         return None
 
 
+def file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def file_mtime_iso(path: Path) -> str | None:
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    return dt.datetime.fromtimestamp(mtime, dt.timezone.utc).isoformat()
+
+
 def metadata_column_values(metadata: dict[str, Any]) -> tuple[Any, ...]:
     return (
         str(metadata["fingerprint"]),
@@ -270,7 +285,13 @@ class RedisSeenStore:
         return self.redis.command("PING")
 
     def stats(self) -> dict[str, Any]:
-        return {"hiddenCount": self.redis.command("SCARD", self.hidden_key)}
+        return {
+            "hiddenCount": self.redis.command("SCARD", self.hidden_key),
+            "hiddenKey": self.hidden_key,
+            "metaPrefix": self.meta_prefix,
+            "redisHost": self.redis.host,
+            "redisPort": self.redis.port,
+        }
 
     def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
         fingerprints = [fingerprint_release(release) for release in releases]
@@ -395,10 +416,51 @@ class SQLiteSeenStore:
 
     def stats(self) -> dict[str, Any]:
         with self._connection() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) AS count FROM hidden_release"
-            ).fetchone()["count"]
-        return {"hiddenCount": int(count)}
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS hidden_count,
+                    MIN(hidden_at) AS oldest_hidden_at,
+                    MAX(hidden_at) AS newest_hidden_at
+                FROM hidden_release
+                """
+            ).fetchone()
+            page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
+            freelist_count = int(
+                conn.execute("PRAGMA freelist_count").fetchone()[0]
+            )
+            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0])
+            sqlite_version = str(
+                conn.execute("SELECT sqlite_version()").fetchone()[0]
+            )
+
+        wal_path = Path(str(self.db_path) + "-wal")
+        shm_path = Path(str(self.db_path) + "-shm")
+        db_size = file_size(self.db_path)
+        wal_size = file_size(wal_path)
+        shm_size = file_size(shm_path)
+
+        return {
+            "hiddenCount": int(row["hidden_count"]),
+            "oldestHiddenAt": row["oldest_hidden_at"],
+            "newestHiddenAt": row["newest_hidden_at"],
+            "dbPath": str(self.db_path),
+            "dbExists": self.db_path.exists(),
+            "dbSizeBytes": db_size,
+            "walSizeBytes": wal_size,
+            "shmSizeBytes": shm_size,
+            "totalSizeBytes": db_size + wal_size + shm_size,
+            "dbModifiedAt": file_mtime_iso(self.db_path),
+            "walModifiedAt": file_mtime_iso(wal_path),
+            "sqliteVersion": sqlite_version,
+            "journalMode": journal_mode,
+            "pageSize": page_size,
+            "pageCount": page_count,
+            "freelistCount": freelist_count,
+            "userVersion": user_version,
+        }
 
     def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
         fingerprints = [fingerprint_release(release) for release in releases]
