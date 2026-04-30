@@ -157,6 +157,14 @@ function firstSelectableResultScript() {
   };
 }
 
+function quickFilterNeedleFromTitle(title) {
+  const fallback = String(title || "").trim().slice(0, 24);
+  const token = String(title || "")
+    .split(/[\s._()[\]{}+\-]+/)
+    .find((part) => part.length >= 6 && !/^\d+$/.test(part));
+  return token || fallback;
+}
+
 async function clickFirstSelectableResult(page) {
   const result = await page.evaluate(firstSelectableResultScript);
   if (!result) {
@@ -385,6 +393,58 @@ async function runSearch(page) {
     }
     const initialGapStats = await page.evaluate(virtualRowGapStatsScript);
     assertNoVirtualRowGaps(initialGapStats, "initial filtered results");
+
+    const quickFilterProbe = await page.evaluate(firstSelectableResultScript);
+    if (!quickFilterProbe) {
+      throw new Error("expected a selectable result before quick filter probe");
+    }
+    const quickFilterNeedle = quickFilterNeedleFromTitle(quickFilterProbe.title);
+    const searchRequestsBeforeQuickFilter = searchRequestCount(requests);
+    await page.locator(".powerarr-plus-quick-filter").fill(quickFilterNeedle);
+    await page.waitForFunction(
+      () => {
+        const status = document.querySelector(".powerarr-plus-status")?.textContent || "";
+        return /快筛\s+[1-9]\d*/.test(status) && /结果\s+[1-9]\d*\//.test(status);
+      },
+      null,
+      { timeout: 30000 }
+    );
+    const quickFilterVisible = await page.evaluate(visibleResultCountScript);
+    if (quickFilterVisible < 1 || quickFilterVisible > beforeVisible) {
+      throw new Error(
+        `quick filter should narrow visible real rows, before=${beforeVisible}, after=${quickFilterVisible}, needle=${quickFilterNeedle}`
+      );
+    }
+    const searchRequestsAfterQuickFilter = searchRequestCount(requests);
+    if (searchRequestsAfterQuickFilter !== searchRequestsBeforeQuickFilter) {
+      throw new Error(
+        `quick filter should not call the real Prowlarr search API: before=${searchRequestsBeforeQuickFilter}, after=${searchRequestsAfterQuickFilter}`
+      );
+    }
+    await page.locator(".powerarr-plus-quick-filter").fill("");
+    await page.waitForFunction(
+      () => !/快筛\s+\d+/.test(
+        document.querySelector(".powerarr-plus-status")?.textContent || ""
+      ),
+      null,
+      { timeout: 30000 }
+    );
+    await page.waitForFunction(
+      (minimumRows) =>
+        Array.from(document.querySelectorAll("[role='gridcell'], tr")).filter((element) => {
+          if (element.closest(".powerarr-plus-toolbar")) {
+            return false;
+          }
+          const text = (element.innerText || element.textContent || "").trim();
+          if (!text || !element.querySelector('input[type="checkbox"]')) {
+            return false;
+          }
+          const style = window.getComputedStyle(element);
+          return style.display !== "none" && style.visibility !== "hidden";
+        }).length >= minimumRows,
+      Math.min(beforeVisible, 2),
+      { timeout: 30000 }
+    );
 
     await page.locator('input[name="selectAll"]').click({ force: true });
     await page.waitForFunction(

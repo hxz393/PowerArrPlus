@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.0.3
+// @version      1.1.0
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -48,6 +48,8 @@
     customFiltersRequest: null,
     transientStatusMessage: "",
     transientStatusUntil: 0,
+    quickFilterText: "",
+    quickFilterTimer: null,
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -136,6 +138,9 @@
     updateStatus();
     refreshCustomFiltersAndResync();
     scheduleInjectCheckboxes();
+    if (state.quickFilterText) {
+      scheduleQuickFilterRefresh(250);
+    }
     return {
       ...result,
       visible: deduped.visible,
@@ -732,7 +737,7 @@
     });
   }
 
-  function activeFilteredReleaseFingerprints() {
+  function activeFilteredReleases() {
     const key = activeReleaseFilterKey();
     if (!key) {
       return null;
@@ -743,10 +748,72 @@
       return null;
     }
 
-    return state.lastVisible
-      .filter((release) => releaseMatchesCustomFilter(release, customFilter))
-      .map((release) => release && release._seenFilterFingerprint)
-      .filter(Boolean);
+    return state.lastVisible.filter((release) =>
+      releaseMatchesCustomFilter(release, customFilter)
+    );
+  }
+
+  function quickFilterComparable(value) {
+    return comparableText(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+
+  function quickFilterNeedles() {
+    const raw = String(state.quickFilterText || "").trim();
+    if (!raw) {
+      return { raw: "", normalized: "", terms: [] };
+    }
+
+    const normalized = quickFilterComparable(raw);
+    return {
+      raw: comparableText(raw),
+      normalized,
+      terms: normalized ? normalized.split(/\s+/).filter(Boolean) : [],
+    };
+  }
+
+  function quickFilterReleaseText(release) {
+    if (!release) {
+      return "";
+    }
+
+    return [
+      release.title,
+      release.sortTitle,
+      release.indexer,
+      release.protocol,
+      release.size,
+      release.files,
+      release.grabs,
+      release.age,
+      ...(release.categories || []).map((category) => category && category.name),
+    ]
+      .filter((value) => value !== undefined && value !== null)
+      .join(" ");
+  }
+
+  function releaseMatchesQuickFilter(release, needles = quickFilterNeedles()) {
+    if (!needles.raw && !needles.normalized && !needles.terms.length) {
+      return true;
+    }
+
+    const rawText = comparableText(quickFilterReleaseText(release));
+    if (needles.raw && rawText.includes(needles.raw)) {
+      return true;
+    }
+
+    const normalizedText = quickFilterComparable(rawText);
+    if (needles.normalized && normalizedText.includes(needles.normalized)) {
+      return true;
+    }
+
+    return needles.terms.every((term) => normalizedText.includes(term));
+  }
+
+  function scopedVisibleReleases() {
+    const customFiltered = activeFilteredReleases();
+    const releases = customFiltered || state.lastVisible;
+    const needles = quickFilterNeedles();
+    return releases.filter((release) => releaseMatchesQuickFilter(release, needles));
   }
 
   function assignedVisibleReleaseFingerprints() {
@@ -852,11 +919,9 @@
   }
 
   function currentVisibleReleaseFingerprints() {
-    const filtered =
-      activeFilteredReleaseFingerprints() ||
-      state.lastVisible
-        .map((release) => release && release._seenFilterFingerprint)
-        .filter(Boolean);
+    const filtered = scopedVisibleReleases()
+      .map((release) => release && release._seenFilterFingerprint)
+      .filter(Boolean);
 
     const nativeFiltered = nativeTableFilteredFingerprints(filtered);
     if (nativeFiltered) {
@@ -1491,9 +1556,9 @@
     return Math.max(0, beforeVisible - state.lastVisible.length);
   }
 
-  function armCurrentSearchReplay() {
+  function armCurrentSearchReplay(releases = state.lastVisible.slice()) {
     state.searchReplay = {
-      visible: state.lastVisible.slice(),
+      visible: releases.slice(),
       expiresAt: Date.now() + 3000,
     };
   }
@@ -1527,8 +1592,8 @@
     );
   }
 
-  function refreshCurrentSearchFromReplay() {
-    armCurrentSearchReplay();
+  function refreshCurrentSearchFromReplay(releases = state.lastVisible.slice()) {
+    armCurrentSearchReplay(releases);
     dispatchEnterSearch(queryInputElement());
 
     window.setTimeout(() => {
@@ -1548,6 +1613,35 @@
         scheduleInjectCheckboxes();
       }
     }, 3000);
+  }
+
+  function refreshCurrentSearchForQuickFilter() {
+    if (!state.lastVisible.length) {
+      return;
+    }
+
+    rowReleaseByFingerprint.clear();
+    refreshCurrentSearchFromReplay(scopedVisibleReleases());
+  }
+
+  function scheduleQuickFilterRefresh(delay = 160) {
+    window.clearTimeout(state.quickFilterTimer);
+    state.quickFilterTimer = window.setTimeout(refreshCurrentSearchForQuickFilter, delay);
+  }
+
+  function setQuickFilterText(value) {
+    const next = String(value || "").trim();
+    if (state.quickFilterText === next) {
+      return;
+    }
+
+    state.quickFilterText = next;
+    state.transientStatusMessage = "";
+    state.transientStatusUntil = 0;
+    state.selected.clear();
+    syncNativeSelectionControls();
+    updateStatus();
+    scheduleQuickFilterRefresh();
   }
 
   async function hideFingerprints(fingerprints) {
@@ -1585,7 +1679,7 @@
       checkbox.checked = false;
     });
     syncNativeSelectionControls();
-    refreshCurrentSearchFromReplay();
+    refreshCurrentSearchFromReplay(scopedVisibleReleases());
     const message = `已隐藏 ${hiddenCount} 条，已从当前结果移除`;
     updateStatus(message);
     window.setTimeout(() => updateStatus(message), 0);
@@ -1637,7 +1731,11 @@
     document
       .querySelectorAll("[data-powerarr-plus-fingerprint]")
       .forEach((row) => {
-        if (row instanceof HTMLElement && isElementVisible(row)) {
+        if (
+          row instanceof HTMLElement &&
+          isElementVisible(row) &&
+          fingerprints.has(row.dataset.powerarrPlusFingerprint)
+        ) {
           fingerprints.add(row.dataset.powerarrPlusFingerprint);
         }
       });
@@ -1685,6 +1783,34 @@
     return button;
   }
 
+  function makeQuickFilterInput() {
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "powerarr-plus-quick-filter";
+    input.placeholder = "快筛结果";
+    input.title = "输入关键字即时过滤当前搜索结果，清空恢复";
+    input.setAttribute("aria-label", "PowerArrPlus 快速过滤");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.value = state.quickFilterText;
+    input.addEventListener("input", () => {
+      setQuickFilterText(input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        input.value = "";
+        setQuickFilterText("");
+      }
+      event.stopPropagation();
+    });
+    ["click", "pointerdown", "mousedown"].forEach((eventName) => {
+      input.addEventListener(eventName, (event) => {
+        event.stopPropagation();
+      });
+    });
+    return input;
+  }
+
   function ensureToolbar() {
     if (!document.body) {
       return;
@@ -1698,6 +1824,8 @@
       const title = document.createElement("strong");
       title.textContent = "Seen Filter";
       toolbar.appendChild(title);
+
+      toolbar.appendChild(makeQuickFilterInput());
 
       toolbar.appendChild(
         makeButton("隐藏选中", async () => {
@@ -1801,13 +1929,12 @@
     const hidden = state.lastHiddenCount;
     const deduped = state.lastDedupeHiddenCount;
     const total = state.lastTotal;
-    const visible = activeReleaseFilterKey()
-      ? currentVisibleReleaseFingerprints().length
-      : state.lastVisible.length;
+    const visible = currentVisibleReleaseFingerprints().length;
     const dedupeText = deduped > 0 ? `，已去重 ${deduped}` : "";
+    const quickText = state.quickFilterText ? `，快筛 ${visible}` : "";
     state.statusEl.textContent =
       total > 0
-        ? `结果 ${visible}/${total}，已过滤 ${hidden}${dedupeText}，已选 ${Math.max(selected, checked)}`
+        ? `结果 ${visible}/${total}，已过滤 ${hidden}${dedupeText}${quickText}，已选 ${Math.max(selected, checked)}`
         : `等待搜索结果，已选 ${Math.max(selected, checked)}`;
   }
 
@@ -1820,7 +1947,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        max-width: min(760px, calc(100vw - 32px));
+        max-width: min(940px, calc(100vw - 32px));
         margin: 0 8px;
         padding: 3px 8px;
         border: 1px solid rgba(148, 163, 184, 0.55);
@@ -1856,6 +1983,25 @@
       .powerarr-plus-toolbar button:disabled {
         cursor: wait;
         opacity: 0.6;
+      }
+      .powerarr-plus-quick-filter {
+        width: 150px;
+        min-width: 110px;
+        height: 24px;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        border-radius: 4px;
+        background: #0f172a;
+        color: #f8fafc;
+        font: inherit;
+        padding: 2px 7px;
+        outline: none;
+      }
+      .powerarr-plus-quick-filter:focus {
+        border-color: #60a5fa;
+        box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.4);
+      }
+      .powerarr-plus-quick-filter::placeholder {
+        color: #94a3b8;
       }
       .powerarr-plus-status {
         white-space: nowrap;
