@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.1.2
+// @version      1.2.0
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -49,8 +49,7 @@
     transientStatusMessage: "",
     transientStatusUntil: 0,
     quickFilterText: "",
-    quickFilterTimer: null,
-    quickFilterRevision: 0,
+    quickFilterDraft: "",
   };
 
   const rowReleaseByFingerprint = new Map();
@@ -140,7 +139,7 @@
     refreshCustomFiltersAndResync();
     scheduleInjectCheckboxes();
     if (state.quickFilterText) {
-      scheduleQuickFilterRefresh(250);
+      window.setTimeout(() => applyQuickFilter({ preserveFocus: false }), 250);
     }
     return {
       ...result,
@@ -1648,7 +1647,7 @@
     }
     restoreReplayFocus();
 
-    window.setTimeout(() => {
+    const triggerReplaySearch = () => {
       if (!state.searchReplay) {
         restoreReplayFocus();
         return;
@@ -1659,7 +1658,13 @@
         button.click();
       }
       restoreReplayFocus();
-    }, 80);
+    };
+
+    if (options.clickDelay === 0) {
+      triggerReplaySearch();
+    } else {
+      window.setTimeout(triggerReplaySearch, 80);
+    }
 
     window.setTimeout(() => {
       if (state.searchReplay) {
@@ -1670,45 +1675,38 @@
     }, 3000);
   }
 
-  function refreshCurrentSearchForQuickFilter(revision = state.quickFilterRevision) {
-    if (revision !== state.quickFilterRevision) {
-      return;
-    }
+  function refreshCurrentSearchForQuickFilter(options = {}) {
     if (!state.lastVisible.length) {
       return;
     }
 
     rowReleaseByFingerprint.clear();
     refreshCurrentSearchFromReplay(scopedVisibleReleases(), {
+      clickDelay: 0,
       dispatchEnter: false,
-      preserveFocus: true,
-      shouldRestoreFocus: () => revision === state.quickFilterRevision,
+      preserveFocus: options.preserveFocus !== false,
     });
   }
 
-  function scheduleQuickFilterRefresh(delay = 160, revision = state.quickFilterRevision) {
-    window.clearTimeout(state.quickFilterTimer);
-    state.quickFilterTimer = window.setTimeout(
-      () => refreshCurrentSearchForQuickFilter(revision),
-      delay
-    );
-  }
-
-  function setQuickFilterText(value) {
+  function applyQuickFilterValue(value, options = {}) {
     const next = String(value || "").trim();
     if (state.quickFilterText === next) {
       return;
     }
 
     state.quickFilterText = next;
-    state.quickFilterRevision += 1;
+    state.quickFilterDraft = next;
     state.searchReplay = null;
     state.transientStatusMessage = "";
     state.transientStatusUntil = 0;
     state.selected.clear();
     syncNativeSelectionControls();
     updateStatus();
-    scheduleQuickFilterRefresh();
+    refreshCurrentSearchForQuickFilter(options);
+  }
+
+  function applyQuickFilter(options = {}) {
+    applyQuickFilterValue(state.quickFilterDraft, options);
   }
 
   async function hideFingerprints(fingerprints) {
@@ -1859,14 +1857,19 @@
     input.setAttribute("aria-label", "PowerArrPlus 快速过滤");
     input.autocomplete = "off";
     input.spellcheck = false;
-    input.value = state.quickFilterText;
+    input.value = state.quickFilterDraft || state.quickFilterText;
     input.addEventListener("input", () => {
-      setQuickFilterText(input.value);
+      state.quickFilterDraft = input.value;
     });
     input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyQuickFilter({ preserveFocus: true });
+      }
       if (event.key === "Escape") {
         input.value = "";
-        setQuickFilterText("");
+        state.quickFilterDraft = "";
+        applyQuickFilter({ preserveFocus: true });
       }
       event.stopPropagation();
     });
@@ -1876,6 +1879,10 @@
       });
     });
     return input;
+  }
+
+  function quickFilterInputElement() {
+    return state.toolbar && state.toolbar.querySelector(".powerarr-plus-quick-filter");
   }
 
   function ensureToolbar() {
@@ -1893,6 +1900,16 @@
       toolbar.appendChild(title);
 
       toolbar.appendChild(makeQuickFilterInput());
+
+      toolbar.appendChild(
+        makeButton("筛选", async () => {
+          const input = quickFilterInputElement();
+          if (input instanceof HTMLInputElement) {
+            state.quickFilterDraft = input.value;
+          }
+          applyQuickFilter({ preserveFocus: false });
+        })
+      );
 
       toolbar.appendChild(
         makeButton("隐藏选中", async () => {

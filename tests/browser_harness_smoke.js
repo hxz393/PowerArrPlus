@@ -116,11 +116,7 @@ function visibleHarnessRowsScript() {
     const quickFilter = page.locator(".powerarr-plus-quick-filter");
     await quickFilter.fill("");
     await quickFilter.type("flac", { delay: 2000 });
-    await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("快筛"),
-      null,
-      { timeout: 30000 }
-    );
+    await page.waitForTimeout(500);
     const slowTypeUi = await page.evaluate(() => {
       const input = document.querySelector(".powerarr-plus-quick-filter");
       return {
@@ -129,27 +125,28 @@ function visibleHarnessRowsScript() {
         selectionEnd: input?.selectionEnd,
         valueLength: input?.value.length,
         value: input?.value,
+        status: document.querySelector(".powerarr-plus-status")?.textContent || "",
+        visibleRows: Array.from(document.querySelectorAll("#results [role='gridcell']")).filter(
+          (row) => window.getComputedStyle(row).display !== "none"
+        ).length,
       };
     });
     if (
       slowTypeUi.value !== "flac" ||
       !slowTypeUi.active ||
       slowTypeUi.selectionStart !== slowTypeUi.valueLength ||
-      slowTypeUi.selectionEnd !== slowTypeUi.valueLength
+      slowTypeUi.selectionEnd !== slowTypeUi.valueLength ||
+      slowTypeUi.status.includes("快筛") ||
+      slowTypeUi.visibleRows !== beforeVisible
     ) {
       throw new Error(
-        `expected slow quick filter typing to keep the cursor stable, got ${JSON.stringify(slowTypeUi)}`
+        `expected slow quick filter typing not to re-render until apply, got ${JSON.stringify(slowTypeUi)}`
       );
     }
 
     await quickFilter.fill("Vaxxed");
-    await page.waitForFunction(
-      () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("快筛"),
-      null,
-      { timeout: 30000 }
-    );
     await quickFilter.type(" HANDJOB", { delay: 30 });
-    await page.waitForTimeout(3300);
+    await page.waitForTimeout(500);
     const staleCursorUi = await page.evaluate(() => {
       const input = document.querySelector(".powerarr-plus-quick-filter");
       return {
@@ -158,18 +155,21 @@ function visibleHarnessRowsScript() {
         selectionEnd: input?.selectionEnd,
         valueLength: input?.value.length,
         value: input?.value,
+        status: document.querySelector(".powerarr-plus-status")?.textContent || "",
       };
     });
     if (
       !staleCursorUi.active ||
       staleCursorUi.selectionStart !== staleCursorUi.valueLength ||
-      staleCursorUi.selectionEnd !== staleCursorUi.valueLength
+      staleCursorUi.selectionEnd !== staleCursorUi.valueLength ||
+      staleCursorUi.status.includes("快筛")
     ) {
       throw new Error(
-        `expected stale quick filter replays not to move the cursor, got ${JSON.stringify(staleCursorUi)}`
+        `expected quick filter typing not to apply before pressing filter, got ${JSON.stringify(staleCursorUi)}`
       );
     }
     await quickFilter.fill("HANDJOB");
+    await quickFilter.press("Enter");
     await page.waitForFunction(
       () =>
         document.querySelector(".powerarr-plus-status")?.textContent?.includes("结果 1/") &&
@@ -227,6 +227,12 @@ function visibleHarnessRowsScript() {
       { timeout: 30000 }
     );
     await page.locator(".powerarr-plus-quick-filter").fill("");
+    await page.getByRole("button", { name: "筛选" }).click();
+    await page.waitForFunction(
+      () => !document.querySelector(".powerarr-plus-status")?.textContent?.includes("快筛"),
+      null,
+      { timeout: 30000 }
+    );
     await page.getByRole("button", { name: "搜索" }).click();
     await page.waitForFunction(
       () => document.querySelector(".powerarr-plus-status")?.textContent?.includes("已过滤 0"),

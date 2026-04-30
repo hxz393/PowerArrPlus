@@ -404,14 +404,7 @@ async function runSearch(page) {
     const slowNeedle = quickFilterNeedle.slice(0, Math.min(4, quickFilterNeedle.length));
     await quickFilterInput.fill("");
     await quickFilterInput.type(slowNeedle, { delay: 2000 });
-    await page.waitForFunction(
-      () => {
-        const status = document.querySelector(".powerarr-plus-status")?.textContent || "";
-        return /快筛\s+[1-9]\d*/.test(status) && /结果\s+[1-9]\d*\//.test(status);
-      },
-      null,
-      { timeout: 30000 }
-    );
+    await page.waitForTimeout(500);
     const realSlowTypeUi = await page.evaluate(() => {
       const input = document.querySelector(".powerarr-plus-quick-filter");
       return {
@@ -420,19 +413,22 @@ async function runSearch(page) {
         selectionEnd: input?.selectionEnd,
         valueLength: input?.value.length,
         value: input?.value,
+        status: document.querySelector(".powerarr-plus-status")?.textContent || "",
       };
     });
     if (
       realSlowTypeUi.value !== slowNeedle ||
       !realSlowTypeUi.active ||
       realSlowTypeUi.selectionStart !== realSlowTypeUi.valueLength ||
-      realSlowTypeUi.selectionEnd !== realSlowTypeUi.valueLength
+      realSlowTypeUi.selectionEnd !== realSlowTypeUi.valueLength ||
+      /快筛\s+\d+/.test(realSlowTypeUi.status)
     ) {
       throw new Error(
-        `real quick filter slow typing should keep the cursor stable, got ${JSON.stringify(realSlowTypeUi)}`
+        `real quick filter slow typing should not apply before pressing filter, got ${JSON.stringify(realSlowTypeUi)}`
       );
     }
     await quickFilterInput.fill(quickFilterNeedle);
+    await quickFilterInput.press("Enter");
     await page.waitForFunction(
       () => {
         const status = document.querySelector(".powerarr-plus-status")?.textContent || "";
@@ -454,6 +450,7 @@ async function runSearch(page) {
       );
     }
     await page.locator(".powerarr-plus-quick-filter").fill("");
+    await page.getByRole("button", { name: "筛选" }).click();
     await page.waitForFunction(
       () => !/快筛\s+\d+/.test(
         document.querySelector(".powerarr-plus-status")?.textContent || ""
