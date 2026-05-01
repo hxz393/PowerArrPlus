@@ -43,6 +43,7 @@
     lastNativeSelectionKey: "",
     lastNativeSelectionAt: 0,
     searchReplay: null,
+    releaseByTitleKey: new Map(),
     customFilters: [],
     customFiltersLoadedAt: 0,
     customFiltersRequest: null,
@@ -53,6 +54,14 @@
   };
 
   const rowReleaseByFingerprint = new Map();
+  const htmlDecodeCache = new Map();
+  const rowTextCache = new WeakMap();
+  const releaseMatchCache = new WeakMap();
+  const nativeCheckboxVisualCache = new WeakMap();
+  const nativeCheckboxStateCache = new WeakMap();
+  const sizeNeedleCache = new Map();
+  const numberTokenRegexCache = new Map();
+  let htmlDecodeTextarea = null;
   const RESULT_ELEMENT_SELECTOR =
     "[role='gridcell'], tr, [role='row'], div[class*='row'], div[class*='Row']";
 
@@ -128,6 +137,7 @@
     }
     state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
     state.lastDedupeHiddenCount = deduped.hidden.length;
+    rebuildReleaseTitleIndex();
     state.lastServiceHiddenFingerprints = serviceHidden
       .map((release) => release && (release.fingerprint || release._seenFilterFingerprint))
       .filter(Boolean);
@@ -362,9 +372,22 @@
   }
 
   function decodeHtmlEntities(value) {
-    const textarea = document.createElement("textarea");
-    textarea.innerHTML = String(value || "").replace(/&(\d+);/g, "&#$1;");
-    return textarea.value;
+    const text = String(value || "");
+    if (!text.includes("&")) {
+      return text;
+    }
+    if (htmlDecodeCache.has(text)) {
+      return htmlDecodeCache.get(text);
+    }
+
+    htmlDecodeTextarea = htmlDecodeTextarea || document.createElement("textarea");
+    htmlDecodeTextarea.innerHTML = text.replace(/&(\d+);/g, "&#$1;");
+    const decoded = htmlDecodeTextarea.value;
+    if (htmlDecodeCache.size > 4000) {
+      htmlDecodeCache.clear();
+    }
+    htmlDecodeCache.set(text, decoded);
+    return decoded;
   }
 
   function strictTitle(value) {
@@ -408,6 +431,11 @@
   }
 
   function sizeNeedles(size) {
+    const cacheKey = String(size || "");
+    if (sizeNeedleCache.has(cacheKey)) {
+      return sizeNeedleCache.get(cacheKey);
+    }
+
     const value = Number(size);
     if (!Number.isFinite(value) || value <= 0) {
       return [];
@@ -428,7 +456,12 @@
       }
     }
     needles.push(comparableText(String(size)));
-    return Array.from(new Set(needles.filter(Boolean)));
+    const result = Array.from(new Set(needles.filter(Boolean)));
+    if (sizeNeedleCache.size > 4000) {
+      sizeNeedleCache.clear();
+    }
+    sizeNeedleCache.set(cacheKey, result);
+    return result;
   }
 
   function rowHasNumberToken(rowText, value) {
@@ -436,8 +469,17 @@
       return false;
     }
 
-    const token = String(value).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|\\D)${token}(\\D|$)`).test(rowText);
+    const cacheKey = String(value).trim();
+    let pattern = numberTokenRegexCache.get(cacheKey);
+    if (!pattern) {
+      const token = cacheKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pattern = new RegExp(`(^|\\D)${token}(\\D|$)`);
+      if (numberTokenRegexCache.size > 4000) {
+        numberTokenRegexCache.clear();
+      }
+      numberTokenRegexCache.set(cacheKey, pattern);
+    }
+    return pattern.test(rowText);
   }
 
   function dedupeReleases(releases) {
@@ -501,6 +543,126 @@
     };
   }
 
+  function releaseMatchData(release) {
+    if (!release) {
+      return {
+        title: "",
+        sortTitle: "",
+        indexer: "",
+        protocol: "",
+        sizeNeedles: [],
+        ageText: "",
+        grabs: 0,
+      };
+    }
+    const cached = releaseMatchCache.get(release);
+    if (cached) {
+      return cached;
+    }
+
+    const data = {
+      title: comparableText(release.title || release.sortTitle),
+      sortTitle: comparableText(release.sortTitle || release.title),
+      indexer: comparableText(release.indexer),
+      protocol: comparableText(release.protocol),
+      sizeNeedles: sizeNeedles(release.size),
+      ageText: hasStrictValue(release.age) ? comparableText(`${release.age} days`) : "",
+      grabs: numericGrabs(release),
+    };
+    releaseMatchCache.set(release, data);
+    return data;
+  }
+
+  function releaseTitleKeys(release) {
+    const data = releaseMatchData(release);
+    return Array.from(new Set([data.title, data.sortTitle].filter(Boolean)));
+  }
+
+  function addReleaseTitleIndex(key, release) {
+    if (!key) {
+      return;
+    }
+    if (!state.releaseByTitleKey.has(key)) {
+      state.releaseByTitleKey.set(key, []);
+    }
+    state.releaseByTitleKey.get(key).push(release);
+  }
+
+  function rebuildReleaseTitleIndex() {
+    state.releaseByTitleKey = new Map();
+    for (const release of state.lastVisible) {
+      for (const key of releaseTitleKeys(release)) {
+        addReleaseTitleIndex(key, release);
+      }
+    }
+  }
+
+  function cachedRowComparableText(row) {
+    if (!(row instanceof HTMLElement)) {
+      return "";
+    }
+
+    const raw = row.textContent || "";
+    const cached = rowTextCache.get(row);
+    if (cached && cached.raw === raw) {
+      return cached.text;
+    }
+
+    const text = comparableText(raw);
+    rowTextCache.set(row, { raw, text });
+    return text;
+  }
+
+  function rowTitleKeys(row) {
+    if (!(row instanceof HTMLElement)) {
+      return [];
+    }
+
+    const keys = [];
+    row.querySelectorAll("a[href]").forEach((anchor) => {
+      const key = comparableText(anchor.textContent || "");
+      if (key) {
+        keys.push(key);
+      }
+    });
+
+    const aria = comparableText(row.getAttribute("aria-label") || row.title || "");
+    if (aria) {
+      keys.push(aria);
+    }
+
+    return Array.from(new Set(keys));
+  }
+
+  function candidateReleasesForRow(row) {
+    const direct = [];
+    const seen = new Set();
+
+    for (const key of rowTitleKeys(row)) {
+      const matches = state.releaseByTitleKey.get(key);
+      if (!matches) {
+        continue;
+      }
+      for (const release of matches) {
+        const fingerprint = release && release._seenFilterFingerprint;
+        if (!fingerprint || seen.has(fingerprint)) {
+          continue;
+        }
+        seen.add(fingerprint);
+        direct.push(release);
+      }
+    }
+
+    if (direct.length) {
+      return direct;
+    }
+
+    if (state.lastVisible.length > 250 && row.querySelector("a[href]")) {
+      return [];
+    }
+    return state.lastVisible;
+  }
+
   function rowCandidates() {
     return resultElements().filter((row) => {
       if (!(row instanceof HTMLElement)) {
@@ -509,11 +671,13 @@
       if (row.closest(".powerarr-plus-toolbar")) {
         return false;
       }
-      const text = comparableText(row.innerText || row.textContent || "");
+      const text = cachedRowComparableText(row);
       if (!text || text.length < 8) {
         return false;
       }
-      return state.lastVisible.some((release) => releaseMatchScore(text, release) > 0);
+      return candidateReleasesForRow(row).some(
+        (release) => releaseMatchScore(text, release) > 0
+      );
     });
   }
 
@@ -541,7 +705,7 @@
   }
 
   function resultText(element) {
-    return comparableText(element.innerText || element.textContent || "");
+    return cachedRowComparableText(element);
   }
 
   function isElementVisible(element) {
@@ -873,27 +1037,44 @@
         }
       });
     }
-    document.querySelectorAll("div, span").forEach((element) => {
-      if (!(element instanceof HTMLElement) || element.closest(".powerarr-plus-toolbar")) {
-        return;
-      }
-      const text = element.innerText || element.textContent || "";
-      if (text.length <= 120 && parseNativeResultCount(text) !== null) {
-        candidates.add(element);
-      }
-    });
 
     for (const element of candidates) {
       if (!isElementDisplayed(element)) {
         continue;
       }
-      const text = element.innerText || element.textContent || "";
+      const text = element.textContent || "";
       if (text.length > 500) {
         continue;
       }
       const count = parseNativeResultCount(text);
       if (count !== null) {
         return count;
+      }
+    }
+
+    if (state.lastVisible.length <= 250) {
+      document.querySelectorAll("div, span").forEach((element) => {
+        if (!(element instanceof HTMLElement) || element.closest(".powerarr-plus-toolbar")) {
+          return;
+        }
+        const text = element.textContent || "";
+        if (text.length <= 120 && parseNativeResultCount(text) !== null) {
+          candidates.add(element);
+        }
+      });
+
+      for (const element of candidates) {
+        if (!isElementDisplayed(element)) {
+          continue;
+        }
+        const text = element.textContent || "";
+        if (text.length > 500) {
+          continue;
+        }
+        const count = parseNativeResultCount(text);
+        if (count !== null) {
+          return count;
+        }
       }
     }
 
@@ -953,13 +1134,14 @@
   }
 
   function releaseMatchScore(rowText, release) {
-    const title = comparableText(release.title || release.sortTitle);
+    const data = releaseMatchData(release);
+    const title = data.title;
     if (!title || !rowText.includes(title)) {
       return 0;
     }
 
     let score = title.length;
-    const indexer = comparableText(release.indexer);
+    const indexer = data.indexer;
     if (indexer && !rowText.includes(indexer)) {
       return 0;
     }
@@ -967,7 +1149,7 @@
       score += 1000 + indexer.length;
     }
 
-    const sizeMatches = sizeNeedles(release.size).some((needle) => rowText.includes(needle));
+    const sizeMatches = data.sizeNeedles.some((needle) => rowText.includes(needle));
     if (sizeMatches) {
       score += 500;
     }
@@ -978,17 +1160,16 @@
 
     if (
       hasStrictValue(release.age) &&
-      (rowText.includes(comparableText(`${release.age} days`)) ||
-        rowHasNumberToken(rowText, release.age))
+      (rowText.includes(data.ageText) || rowHasNumberToken(rowText, release.age))
     ) {
       score += 150;
     }
 
-    if (rowHasNumberToken(rowText, numericGrabs(release))) {
+    if (rowHasNumberToken(rowText, data.grabs)) {
       score += 100;
     }
 
-    const protocol = comparableText(release.protocol);
+    const protocol = data.protocol;
     if (protocol && rowText.includes(protocol)) {
       score += 50;
     }
@@ -1001,7 +1182,7 @@
     let best = null;
     let bestScore = 0;
 
-    for (const release of state.lastVisible) {
+    for (const release of candidateReleasesForRow(row)) {
       const fingerprint = release._seenFilterFingerprint;
       if (!fingerprint || used.has(fingerprint)) {
         continue;
@@ -1146,6 +1327,14 @@
   }
 
   function nativeCheckboxVisualElements(checkbox) {
+    const cached = nativeCheckboxVisualCache.get(checkbox);
+    if (
+      cached &&
+      cached.elements.every((element) => element instanceof HTMLElement && document.contains(element))
+    ) {
+      return cached.elements;
+    }
+
     const elements = new Set();
     const container = nearestCheckboxContainer(checkbox);
     if (container instanceof HTMLElement) {
@@ -1171,7 +1360,9 @@
       depth += 1;
     }
 
-    return Array.from(elements);
+    const result = Array.from(elements);
+    nativeCheckboxVisualCache.set(checkbox, { elements: result });
+    return result;
   }
 
   function syncNativeCheckboxVisual(checkbox, selected, indeterminate = false) {
@@ -1179,7 +1370,31 @@
       return;
     }
 
+    const previous = nativeCheckboxStateCache.get(checkbox);
+    if (
+      previous &&
+      previous.selected === selected &&
+      previous.indeterminate === indeterminate &&
+      checkbox.checked === selected &&
+      checkbox.indeterminate === indeterminate &&
+      !selected &&
+      !indeterminate
+    ) {
+      return;
+    }
+
     checkbox.setAttribute("aria-checked", indeterminate ? "mixed" : selected ? "true" : "false");
+    if (
+      !previous &&
+      !selected &&
+      !indeterminate &&
+      checkbox.checked === false &&
+      checkbox.indeterminate === false
+    ) {
+      nativeCheckboxStateCache.set(checkbox, { selected, indeterminate });
+      return;
+    }
+
     const container = nearestCheckboxContainer(checkbox);
     if (container instanceof HTMLElement) {
       container.classList.toggle("powerarr-plus-native-checked", selected);
@@ -1190,6 +1405,7 @@
       element.classList.toggle("powerarr-plus-native-checked", selected);
       element.classList.toggle("powerarr-plus-native-indeterminate", indeterminate);
     });
+    nativeCheckboxStateCache.set(checkbox, { selected, indeterminate });
   }
 
   function syncNativeSelectionControls() {
@@ -1258,7 +1474,6 @@
         checkbox.addEventListener(eventName, handleEvent, true);
       });
     });
-    syncNativeSelectionControls();
   }
 
   function nativeCheckboxFromEvent(event) {
@@ -1348,7 +1563,15 @@
       state.lastNativeSelectionKey === fingerprint &&
       now - state.lastNativeSelectionAt < 250
     ) {
-      syncNativeSelectionControls();
+      if (!isSelectAll && row instanceof HTMLElement) {
+        const selected =
+          state.selected.has(fingerprint) &&
+          !state.currentPageActionHiddenFingerprints.has(fingerprint);
+        checkbox.checked = selected;
+        checkbox.indeterminate = false;
+        syncNativeCheckboxVisual(checkbox, selected, false);
+        row.classList.toggle("powerarr-plus-selected", selected);
+      }
       return;
     }
     state.lastNativeSelectionKey = fingerprint || "";
@@ -1552,6 +1775,7 @@
     state.lastVisible = deduped.visible;
     state.dedupeGroupByFingerprint = deduped.groupByFingerprint;
     state.lastDedupeHiddenCount = deduped.hidden.length;
+    rebuildReleaseTitleIndex();
     state.lastHiddenCount += hiddenCount || hidden.size;
     return Math.max(0, beforeVisible - state.lastVisible.length);
   }
