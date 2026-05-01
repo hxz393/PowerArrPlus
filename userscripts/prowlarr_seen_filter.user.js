@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.2.2
+// @version      1.2.3
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -432,10 +432,6 @@
     return decoded;
   }
 
-  function strictTitle(value) {
-    return decodeHtmlEntities(value).normalize("NFC").trim();
-  }
-
   function hasStrictValue(value) {
     return value !== undefined && value !== null && String(value).trim() !== "";
   }
@@ -445,22 +441,48 @@
     return protocol === "nzb" || protocol === "usenet";
   }
 
+  function ageDays(release) {
+    const age = Number(release && release.age);
+    return Number.isFinite(age) ? age : null;
+  }
+
   function dedupeKeyForRelease(release) {
     if (!release || !isNzbProtocol(release)) {
       return null;
     }
 
-    const title = strictTitle(release.title || release.sortTitle);
-    if (!title || !hasStrictValue(release.size) || !hasStrictValue(release.files)) {
+    if (
+      !hasStrictValue(release.size) ||
+      !hasStrictValue(release.files) ||
+      ageDays(release) === null
+    ) {
       return null;
     }
 
     return [
-      "dedupe:nzb:v1",
-      title,
+      "dedupe:nzb:v2",
       String(release.size).trim(),
       String(release.files).trim(),
     ].join("\u001f");
+  }
+
+  function splitByCloseAge(group) {
+    const sorted = group
+      .slice()
+      .sort((left, right) => ageDays(left) - ageDays(right));
+    const buckets = [];
+
+    for (const release of sorted) {
+      const releaseAge = ageDays(release);
+      let bucket = buckets[buckets.length - 1];
+      if (!bucket || Math.abs(releaseAge - bucket.anchorAge) > 1) {
+        bucket = { anchorAge: releaseAge, releases: [] };
+        buckets.push(bucket);
+      }
+      bucket.releases.push(release);
+    }
+
+    return buckets.map((bucket) => bucket.releases);
   }
 
   function numericGrabs(release) {
@@ -542,24 +564,28 @@
       groups.get(key).push(release);
     }
 
-    for (const group of groups.values()) {
-      if (group.length < 2) {
-        visibleFingerprints.add(group[0]._seenFilterFingerprint);
-        continue;
-      }
+    for (const baseGroup of groups.values()) {
+      const dedupeGroups = splitByCloseAge(baseGroup);
 
-      let representative = group[0];
-      for (const release of group.slice(1)) {
-        if (numericGrabs(release) > numericGrabs(representative)) {
-          representative = release;
+      for (const group of dedupeGroups) {
+        if (group.length < 2) {
+          visibleFingerprints.add(group[0]._seenFilterFingerprint);
+          continue;
         }
-      }
 
-      visibleFingerprints.add(representative._seenFilterFingerprint);
-      for (const release of group) {
-        groupByFingerprint.set(release._seenFilterFingerprint, group);
-        if (release !== representative) {
-          hidden.push(release);
+        let representative = group[0];
+        for (const release of group.slice(1)) {
+          if (numericGrabs(release) > numericGrabs(representative)) {
+            representative = release;
+          }
+        }
+
+        visibleFingerprints.add(representative._seenFilterFingerprint);
+        for (const release of group) {
+          groupByFingerprint.set(release._seenFilterFingerprint, group);
+          if (release !== representative) {
+            hidden.push(release);
+          }
         }
       }
     }

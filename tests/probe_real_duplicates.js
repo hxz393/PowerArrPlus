@@ -49,6 +49,11 @@ function hasValue(value) {
   return value !== undefined && value !== null && String(value).trim() !== "";
 }
 
+function ageDays(release) {
+  const age = Number(release && release.age);
+  return Number.isFinite(age) ? age : null;
+}
+
 function keyFor(release, fields) {
   return fields.map((field) => {
     if (field === "title") {
@@ -71,6 +76,31 @@ function groupsFor(releases, fields, predicate = () => true) {
     groups.get(key).push(release);
   }
   return Array.from(groups.values()).filter((group) => group.length > 1);
+}
+
+function splitByCloseAge(group) {
+  const sorted = group.slice().sort((left, right) => ageDays(left) - ageDays(right));
+  const buckets = [];
+  for (const release of sorted) {
+    const releaseAge = ageDays(release);
+    let bucket = buckets[buckets.length - 1];
+    if (!bucket || Math.abs(releaseAge - bucket.anchorAge) > 1) {
+      bucket = { anchorAge: releaseAge, releases: [] };
+      buckets.push(bucket);
+    }
+    bucket.releases.push(release);
+  }
+  return buckets.map((bucket) => bucket.releases);
+}
+
+function currentRuleGroupsFor(releases) {
+  return groupsFor(
+    releases,
+    ["size", "files"],
+    (release) => hasValue(release.size) &&
+      hasValue(release.files) &&
+      ageDays(release) !== null
+  ).flatMap(splitByCloseAge).filter((group) => group.length > 1);
 }
 
 function summarizeGroup(group) {
@@ -112,6 +142,7 @@ function summarizeGroup(group) {
       (release) => ["nzb", "usenet"].includes(String(release.protocol || "").toLowerCase())
     );
     const missingFiles = nzbReleases.filter((release) => !hasValue(release.files));
+    const currentRuleGroups = currentRuleGroupsFor(nzbReleases);
     const strictGroups = groupsFor(
       nzbReleases,
       ["title", "size", "files"],
@@ -138,6 +169,11 @@ function summarizeGroup(group) {
       files: {
         missing: missingFiles.length,
         sampleValues: Array.from(new Set(nzbReleases.map((release) => release.files))).slice(0, 20),
+      },
+      currentRule: {
+        groups: currentRuleGroups.length,
+        hiddenWouldBe: currentRuleGroups.reduce((count, group) => count + group.length - 1, 0),
+        samples: currentRuleGroups.slice(0, 8).map(summarizeGroup),
       },
       strict: {
         groups: strictGroups.length,
