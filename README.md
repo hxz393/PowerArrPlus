@@ -264,6 +264,25 @@ Windows PowerShell helper:
 powershell -ExecutionPolicy Bypass -File .\scripts\start-powerarr-plus.ps1
 ```
 
+### Userscript Development
+
+The Tampermonkey script is built from modular source files under
+`src-userscript/`. Edit those files first, then rebuild the single installable
+userscript:
+
+```bash
+node scripts/build-userscript.js
+```
+
+The generated output remains:
+
+```text
+userscripts/prowlarr_seen_filter.user.js
+```
+
+Tampermonkey should still install that generated file. Do not edit it directly
+unless you also copy the same change back into `src-userscript/`.
+
 ## Tests
 
 Python unit tests:
@@ -282,6 +301,7 @@ python -m unittest discover -s tests
 Userscript syntax check:
 
 ```bash
+node scripts/build-userscript.js
 node --check userscripts/prowlarr_seen_filter.user.js
 ```
 
