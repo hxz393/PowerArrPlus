@@ -143,6 +143,89 @@ class SeenFilterTests(unittest.TestCase):
             self.assertEqual(filter_result["hiddenCount"], 0)
             self.assertEqual(len(filter_result["visible"]), 2)
 
+    def test_sqlite_store_reuses_hidden_nzb_signature_without_title(self) -> None:
+        hidden_release = {
+            "guid": "hidden-a",
+            "indexerId": 1,
+            "title": "The Example 2026 720p BluRay x264-GRP",
+            "indexer": "IndexerA",
+            "size": 123456789,
+            "files": 87,
+            "protocol": "nzb",
+            "publishDate": "2026-01-10T02:00:00Z",
+        }
+        title_variant = {
+            "guid": "visible-b",
+            "indexerId": 2,
+            "title": "The.Example.2026.720p.BluRay.x264-GRP grp-tl",
+            "indexer": "IndexerB",
+            "size": 123456789,
+            "files": 87,
+            "protocol": "usenet",
+            "publishDate": "2026-01-11T01:00:00Z",
+        }
+        far_date_variant = {
+            "guid": "visible-c",
+            "indexerId": 3,
+            "title": "The.Example.2026.720p.BluRay.x264-GRP",
+            "indexer": "IndexerC",
+            "size": 123456789,
+            "files": 87,
+            "protocol": "nzb",
+            "publishDate": "2026-01-20T01:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteSeenStore(Path(temp_dir) / "powerarrplus.sqlite3")
+            store.hide_releases([hidden_release])
+
+            filter_result = store.filter_releases([title_variant, far_date_variant])
+
+            self.assertEqual(filter_result["hiddenCount"], 1)
+            self.assertEqual(len(filter_result["visible"]), 1)
+            self.assertEqual(filter_result["visible"][0]["guid"], "visible-c")
+            self.assertEqual(
+                filter_result["hidden"][0]["fingerprint"],
+                fingerprint_release(hidden_release),
+            )
+
+            store.unhide([fingerprint_release(hidden_release)])
+            filter_result = store.filter_releases([title_variant, far_date_variant])
+            self.assertEqual(filter_result["hiddenCount"], 0)
+            self.assertEqual(len(filter_result["visible"]), 2)
+
+    def test_redis_store_reuses_hidden_nzb_signature_without_title(self) -> None:
+        hidden_release = {
+            "guid": "hidden-a",
+            "indexerId": 1,
+            "title": "The Example 2026 720p BluRay x264-GRP",
+            "indexer": "IndexerA",
+            "size": 123456789,
+            "files": 87,
+            "protocol": "nzb",
+            "publishDate": "2026-01-10T02:00:00Z",
+        }
+        title_variant = {
+            "guid": "visible-b",
+            "indexerId": 2,
+            "title": "The.Example.2026.720p.BluRay.x264-GRP grp-tl",
+            "indexer": "IndexerB",
+            "size": 123456789,
+            "files": 87,
+            "protocol": "usenet",
+            "publishDate": "2026-01-11T01:00:00Z",
+        }
+        redis_store = RedisSeenStore(FakeRedisClient(), "test:prefix")
+        redis_store.hide_releases([hidden_release])
+
+        filter_result = redis_store.filter_releases([title_variant])
+
+        self.assertEqual(filter_result["hiddenCount"], 1)
+        self.assertEqual(
+            filter_result["hidden"][0]["fingerprint"],
+            fingerprint_release(hidden_release),
+        )
+
     def test_migrates_redis_metadata_to_sqlite(self) -> None:
         redis = FakeRedisClient()
         redis_store = RedisSeenStore(redis, "test:prefix")

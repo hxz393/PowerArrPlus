@@ -188,6 +188,7 @@ def release_metadata(release: dict[str, Any], fingerprint: str) -> dict[str, Any
         "files": release.get("files"),
         "protocol": release.get("protocol"),
         "publishDate": release.get("publishDate"),
+        "age": release.get("age"),
         "grabs": release.get("grabs"),
         "seeders": release.get("seeders"),
         "leechers": release.get("leechers"),
@@ -206,6 +207,112 @@ def optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def release_protocol(release: dict[str, Any]) -> str:
+    return normalize_title(release.get("protocol"))
+
+
+def is_nzb_release(release: dict[str, Any]) -> bool:
+    return release_protocol(release) in {"nzb", "usenet"}
+
+
+def date_ordinal(value: Any) -> int | None:
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    parsed: dt.datetime | None = None
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = dt.datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc)
+    return parsed.date().toordinal()
+
+
+def release_publish_day(
+    release: dict[str, Any], now: dt.datetime | None = None
+) -> int | None:
+    for key in ("publishDate", "publish_date", "postedDate", "date"):
+        day = date_ordinal(release.get(key))
+        if day is not None:
+            return day
+
+    age = optional_int(release.get("age"))
+    if age is None:
+        return None
+
+    reference_day = date_ordinal(release.get("hiddenAt"))
+    if reference_day is None:
+        reference = now or dt.datetime.now(dt.timezone.utc)
+        reference_day = reference.astimezone(dt.timezone.utc).date().toordinal()
+    return reference_day - age
+
+
+def duplicate_signature(
+    release: dict[str, Any], now: dt.datetime | None = None
+) -> tuple[int, int, int] | None:
+    if not is_nzb_release(release):
+        return None
+
+    size = optional_int(release.get("size"))
+    files = optional_int(release.get("files"))
+    publish_day = release_publish_day(release, now)
+    if size is None or files is None or publish_day is None:
+        return None
+
+    return size, files, publish_day
+
+
+def signatures_match(
+    left: tuple[int, int, int], right: tuple[int, int, int]
+) -> bool:
+    return left[0] == right[0] and left[1] == right[1] and abs(left[2] - right[2]) <= 1
+
+
+def duplicate_signature_candidates(
+    releases: list[dict[str, Any]],
+    fingerprints: list[str],
+    exact_hidden: set[str],
+    now: dt.datetime,
+) -> tuple[list[tuple[int, tuple[int, int, int]]], set[tuple[int, int]]]:
+    candidates: list[tuple[int, tuple[int, int, int]]] = []
+    pairs: set[tuple[int, int]] = set()
+    for index, (release, fingerprint) in enumerate(zip(releases, fingerprints)):
+        if fingerprint in exact_hidden:
+            continue
+        signature = duplicate_signature(release, now)
+        if signature is None:
+            continue
+        candidates.append((index, signature))
+        pairs.add((signature[0], signature[1]))
+    return candidates, pairs
+
+
+def find_duplicate_signature_matches(
+    candidates: list[tuple[int, tuple[int, int, int]]],
+    hidden_by_pair: dict[tuple[int, int], list[tuple[str, tuple[int, int, int]]]],
+) -> dict[int, str]:
+    matches: dict[int, str] = {}
+    for index, signature in candidates:
+        pair = (signature[0], signature[1])
+        for fingerprint, hidden_signature in hidden_by_pair.get(pair, []):
+            if signatures_match(signature, hidden_signature):
+                matches[index] = fingerprint
+                break
+    return matches
 
 
 def file_size(path: Path) -> int:
@@ -251,6 +358,9 @@ def hidden_summary(
         "indexerId": release.get("indexerId"),
         "size": release.get("size"),
         "files": release.get("files"),
+        "protocol": release.get("protocol"),
+        "publishDate": release.get("publishDate"),
+        "age": release.get("age"),
     }
 
 
@@ -293,16 +403,68 @@ class RedisSeenStore:
             "redisPort": self.redis.port,
         }
 
+    def _signature_matches(
+        self,
+        releases: list[dict[str, Any]],
+        fingerprints: list[str],
+        exact_hidden: set[str],
+    ) -> dict[int, str]:
+        now = dt.datetime.now(dt.timezone.utc)
+        candidates, candidate_pairs = duplicate_signature_candidates(
+            releases, fingerprints, exact_hidden, now
+        )
+        if not candidates:
+            return {}
+
+        hidden_by_pair: dict[tuple[int, int], list[tuple[str, tuple[int, int, int]]]] = {}
+        cursor = "0"
+        while True:
+            result = self.redis.command("SSCAN", self.hidden_key, cursor, "COUNT", 1000)
+            if not isinstance(result, list) or len(result) != 2:
+                raise RedisProtocolError("unexpected Redis SSCAN response")
+
+            cursor = str(result[0])
+            hidden_fingerprints = [str(fp) for fp in (result[1] or [])]
+            if hidden_fingerprints:
+                raw_metadata = self.redis.pipeline(
+                    [
+                        ("GET", f"{self.meta_prefix}:{fingerprint}")
+                        for fingerprint in hidden_fingerprints
+                    ]
+                )
+                for fingerprint, raw in zip(hidden_fingerprints, raw_metadata):
+                    metadata, _problem = metadata_from_redis(fingerprint, raw, now.isoformat())
+                    signature = duplicate_signature(metadata, now)
+                    if signature is None:
+                        continue
+                    pair = (signature[0], signature[1])
+                    if pair in candidate_pairs:
+                        hidden_by_pair.setdefault(pair, []).append((fingerprint, signature))
+
+            if cursor == "0":
+                break
+
+        return find_duplicate_signature_matches(candidates, hidden_by_pair)
+
     def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
         fingerprints = [fingerprint_release(release) for release in releases]
         commands = [("SISMEMBER", self.hidden_key, fp) for fp in fingerprints]
         hidden_flags = self.redis.pipeline(commands) if commands else []
+        exact_hidden = {
+            fingerprint
+            for fingerprint, flag in zip(fingerprints, hidden_flags)
+            if int(flag) == 1
+        }
+        signature_matches = self._signature_matches(releases, fingerprints, exact_hidden)
 
         visible: list[dict[str, Any]] = []
         hidden: list[dict[str, Any]] = []
-        for release, fingerprint, flag in zip(releases, fingerprints, hidden_flags):
-            if int(flag) == 1:
-                hidden.append(hidden_summary(release, fingerprint))
+        for index, (release, fingerprint) in enumerate(zip(releases, fingerprints)):
+            matched_fingerprint = (
+                fingerprint if fingerprint in exact_hidden else signature_matches.get(index)
+            )
+            if matched_fingerprint:
+                hidden.append(hidden_summary(release, matched_fingerprint))
             else:
                 copied = dict(release)
                 copied["_seenFilterFingerprint"] = fingerprint
@@ -408,6 +570,12 @@ class SQLiteSeenStore:
                 ON hidden_release(indexer_id)
                 """
             )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_hidden_release_size_files
+                ON hidden_release(size, files)
+                """
+            )
 
     def ping(self) -> str:
         with self._connection() as conn:
@@ -462,9 +630,58 @@ class SQLiteSeenStore:
             "userVersion": user_version,
         }
 
+    def _signature_matches(
+        self,
+        releases: list[dict[str, Any]],
+        fingerprints: list[str],
+        exact_hidden: set[str],
+        conn: sqlite3.Connection,
+    ) -> dict[int, str]:
+        now = dt.datetime.now(dt.timezone.utc)
+        candidates, candidate_pairs = duplicate_signature_candidates(
+            releases, fingerprints, exact_hidden, now
+        )
+        if not candidates:
+            return {}
+
+        hidden_by_pair: dict[tuple[int, int], list[tuple[str, tuple[int, int, int]]]] = {}
+        pair_batch_size = max(1, SQLITE_QUERY_CHUNK_SIZE // 2)
+        for batch in chunked(sorted(candidate_pairs), pair_batch_size):
+            clause = " OR ".join("(size = ? AND files = ?)" for _ in batch)
+            params: list[Any] = []
+            for size, files in batch:
+                params.extend([size, files])
+
+            rows = conn.execute(
+                f"""
+                SELECT fingerprint, metadata_json
+                FROM hidden_release
+                WHERE {clause}
+                """,
+                params,
+            ).fetchall()
+            for row in rows:
+                try:
+                    metadata = json.loads(str(row["metadata_json"]))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(metadata, dict):
+                    continue
+
+                signature = duplicate_signature(metadata, now)
+                if signature is None:
+                    continue
+                pair = (signature[0], signature[1])
+                hidden_by_pair.setdefault(pair, []).append(
+                    (str(row["fingerprint"]), signature)
+                )
+
+        return find_duplicate_signature_matches(candidates, hidden_by_pair)
+
     def filter_releases(self, releases: list[dict[str, Any]]) -> dict[str, Any]:
         fingerprints = [fingerprint_release(release) for release in releases]
         hidden_fingerprints: set[str] = set()
+        signature_matches: dict[int, str] = {}
 
         if fingerprints:
             with self._connection() as conn:
@@ -480,12 +697,20 @@ class SQLiteSeenStore:
                         batch,
                     ).fetchall()
                     hidden_fingerprints.update(str(row["fingerprint"]) for row in rows)
+                signature_matches = self._signature_matches(
+                    releases, fingerprints, hidden_fingerprints, conn
+                )
 
         visible: list[dict[str, Any]] = []
         hidden: list[dict[str, Any]] = []
-        for release, fingerprint in zip(releases, fingerprints):
-            if fingerprint in hidden_fingerprints:
-                hidden.append(hidden_summary(release, fingerprint))
+        for index, (release, fingerprint) in enumerate(zip(releases, fingerprints)):
+            matched_fingerprint = (
+                fingerprint
+                if fingerprint in hidden_fingerprints
+                else signature_matches.get(index)
+            )
+            if matched_fingerprint:
+                hidden.append(hidden_summary(release, matched_fingerprint))
             else:
                 copied = dict(release)
                 copied["_seenFilterFingerprint"] = fingerprint
