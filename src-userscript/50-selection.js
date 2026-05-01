@@ -295,6 +295,10 @@
   }
 
   function syncNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return;
+    }
+
     syncResultRows();
     const fingerprints = currentVisibleReleaseFingerprints().filter(
       (fingerprint) => !state.currentPageActionHiddenFingerprints.has(fingerprint)
@@ -338,6 +342,10 @@
   }
 
   function bindNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return;
+    }
+
     installNativeSelectionInterceptor();
     document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
@@ -428,6 +436,9 @@
     ) {
       return;
     }
+    if (state.searchInFlight) {
+      return;
+    }
 
     syncResultRows();
     const isSelectAll = isNativeSelectAllCheckbox(checkbox);
@@ -480,6 +491,10 @@
   }
 
   function hasNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return false;
+    }
+
     return Array.from(document.querySelectorAll('input[type="checkbox"]')).some((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
         return false;
@@ -557,6 +572,9 @@
   }
 
   function injectCheckboxes() {
+    if (state.searchInFlight) {
+      return;
+    }
     if (!state.lastVisible.length) {
       return;
     }

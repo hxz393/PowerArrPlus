@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PowerArrPlus - Prowlarr Seen Filter
 // @namespace    local.powerarr-plus.prowlarr-seen-filter
-// @version      1.2.1
+// @version      1.2.2
 // @author       hxz393
 // @description  Hide selected Prowlarr search results across future searches.
 // @match        http://localhost:9696/*
@@ -44,6 +44,7 @@
     lastNativeSelectionKey: "",
     lastNativeSelectionAt: 0,
     searchReplay: null,
+    searchInFlight: false,
     releaseByTitleKey: new Map(),
     customFilters: [],
     customFiltersLoadedAt: 0,
@@ -122,6 +123,7 @@
   }
 
   async function filterReleases(releases) {
+    state.searchInFlight = false;
     const result = await servicePost("/api/filter", { releases });
     const serviceVisible = Array.isArray(result.visible) ? result.visible : releases;
     const serviceHidden = Array.isArray(result.hidden) ? result.hidden : [];
@@ -160,6 +162,30 @@
     };
   }
 
+  function beginRealSearchRequest() {
+    state.searchInFlight = true;
+    state.lastVisible = [];
+    state.lastAllVisible = [];
+    state.releaseByFingerprint = new Map();
+    state.releaseByTitleKey = new Map();
+    state.dedupeGroupByFingerprint = new Map();
+    state.lastDedupeHiddenCount = 0;
+    state.lastServiceHiddenFingerprints = [];
+    state.currentPageActionHiddenFingerprints.clear();
+    state.selected.clear();
+    state.lastHiddenCount = 0;
+    state.lastTotal = 0;
+    state.searchReplay = null;
+    rowReleaseByFingerprint.clear();
+    window.clearTimeout(state.injectTimer);
+    updateStatus();
+  }
+
+  function finishRealSearchRequest() {
+    state.searchInFlight = false;
+    updateStatus();
+  }
+
   function jsonSearchResponse(releases, status = 200, statusText = "OK") {
     return new Response(JSON.stringify(releases || []), {
       status,
@@ -191,21 +217,35 @@
 
     const nativeFetch = window.fetch.bind(window);
     const wrappedFetch = async function (input, init) {
-      if (isGetRequest(input, init) && isSearchUrl(input)) {
+      const isSearchRequest = isGetRequest(input, init) && isSearchUrl(input);
+      if (isSearchRequest) {
         const replayResponse = consumeSearchReplay();
         if (replayResponse) {
           return replayResponse;
         }
+        beginRealSearchRequest();
       }
 
-      const response = await nativeFetch(input, init);
-      if (!response || !response.ok || !isGetRequest(input, init) || !isSearchUrl(input)) {
+      let response;
+      try {
+        response = await nativeFetch(input, init);
+      } catch (error) {
+        if (isSearchRequest) {
+          finishRealSearchRequest();
+        }
+        throw error;
+      }
+      if (!response || !response.ok || !isSearchRequest) {
+        if (isSearchRequest) {
+          finishRealSearchRequest();
+        }
         return response;
       }
 
       try {
         const original = await response.clone().json();
         if (!Array.isArray(original)) {
+          finishRealSearchRequest();
           return response;
         }
 
@@ -220,6 +260,7 @@
         });
       } catch (error) {
         state.serviceOk = false;
+        finishRealSearchRequest();
         updateStatus(`过滤服务不可用，显示原始结果：${error.message || error}`);
         return response;
       }
@@ -780,6 +821,11 @@
   }
 
   function refreshCustomFiltersAndResync(force = false) {
+    if (state.searchInFlight) {
+      refreshCustomFilters(force);
+      return;
+    }
+
     refreshCustomFilters(force).then(() => {
       syncResultRows();
       syncNativeSelectionControls();
@@ -1398,6 +1444,10 @@
   }
 
   function syncNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return;
+    }
+
     syncResultRows();
     const fingerprints = currentVisibleReleaseFingerprints().filter(
       (fingerprint) => !state.currentPageActionHiddenFingerprints.has(fingerprint)
@@ -1441,6 +1491,10 @@
   }
 
   function bindNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return;
+    }
+
     installNativeSelectionInterceptor();
     document.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
@@ -1531,6 +1585,9 @@
     ) {
       return;
     }
+    if (state.searchInFlight) {
+      return;
+    }
 
     syncResultRows();
     const isSelectAll = isNativeSelectAllCheckbox(checkbox);
@@ -1583,6 +1640,10 @@
   }
 
   function hasNativeSelectionControls() {
+    if (state.searchInFlight) {
+      return false;
+    }
+
     return Array.from(document.querySelectorAll('input[type="checkbox"]')).some((checkbox) => {
       if (!(checkbox instanceof HTMLInputElement)) {
         return false;
@@ -1660,6 +1721,9 @@
   }
 
   function injectCheckboxes() {
+    if (state.searchInFlight) {
+      return;
+    }
     if (!state.lastVisible.length) {
       return;
     }
@@ -2218,6 +2282,11 @@
 
     if (state.serviceOk === false) {
       state.statusEl.textContent = "过滤服务离线";
+      return;
+    }
+
+    if (state.searchInFlight) {
+      state.statusEl.textContent = "搜索中";
       return;
     }
 

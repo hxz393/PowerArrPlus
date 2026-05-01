@@ -58,6 +58,11 @@
   }
 
   function refreshCustomFiltersAndResync(force = false) {
+    if (state.searchInFlight) {
+      refreshCustomFilters(force);
+      return;
+    }
+
     refreshCustomFilters(force).then(() => {
       syncResultRows();
       syncNativeSelectionControls();

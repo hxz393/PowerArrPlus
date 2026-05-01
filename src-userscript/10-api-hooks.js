@@ -54,6 +54,7 @@
   }
 
   async function filterReleases(releases) {
+    state.searchInFlight = false;
     const result = await servicePost("/api/filter", { releases });
     const serviceVisible = Array.isArray(result.visible) ? result.visible : releases;
     const serviceHidden = Array.isArray(result.hidden) ? result.hidden : [];
@@ -92,6 +93,30 @@
     };
   }
 
+  function beginRealSearchRequest() {
+    state.searchInFlight = true;
+    state.lastVisible = [];
+    state.lastAllVisible = [];
+    state.releaseByFingerprint = new Map();
+    state.releaseByTitleKey = new Map();
+    state.dedupeGroupByFingerprint = new Map();
+    state.lastDedupeHiddenCount = 0;
+    state.lastServiceHiddenFingerprints = [];
+    state.currentPageActionHiddenFingerprints.clear();
+    state.selected.clear();
+    state.lastHiddenCount = 0;
+    state.lastTotal = 0;
+    state.searchReplay = null;
+    rowReleaseByFingerprint.clear();
+    window.clearTimeout(state.injectTimer);
+    updateStatus();
+  }
+
+  function finishRealSearchRequest() {
+    state.searchInFlight = false;
+    updateStatus();
+  }
+
   function jsonSearchResponse(releases, status = 200, statusText = "OK") {
     return new Response(JSON.stringify(releases || []), {
       status,
@@ -123,21 +148,35 @@
 
     const nativeFetch = window.fetch.bind(window);
     const wrappedFetch = async function (input, init) {
-      if (isGetRequest(input, init) && isSearchUrl(input)) {
+      const isSearchRequest = isGetRequest(input, init) && isSearchUrl(input);
+      if (isSearchRequest) {
         const replayResponse = consumeSearchReplay();
         if (replayResponse) {
           return replayResponse;
         }
+        beginRealSearchRequest();
       }
 
-      const response = await nativeFetch(input, init);
-      if (!response || !response.ok || !isGetRequest(input, init) || !isSearchUrl(input)) {
+      let response;
+      try {
+        response = await nativeFetch(input, init);
+      } catch (error) {
+        if (isSearchRequest) {
+          finishRealSearchRequest();
+        }
+        throw error;
+      }
+      if (!response || !response.ok || !isSearchRequest) {
+        if (isSearchRequest) {
+          finishRealSearchRequest();
+        }
         return response;
       }
 
       try {
         const original = await response.clone().json();
         if (!Array.isArray(original)) {
+          finishRealSearchRequest();
           return response;
         }
 
@@ -152,6 +191,7 @@
         });
       } catch (error) {
         state.serviceOk = false;
+        finishRealSearchRequest();
         updateStatus(`过滤服务不可用，显示原始结果：${error.message || error}`);
         return response;
       }

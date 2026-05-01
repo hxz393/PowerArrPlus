@@ -175,6 +175,11 @@
       return;
     }
 
+    if (state.searchInFlight) {
+      state.statusEl.textContent = "搜索中";
+      return;
+    }
+
     const selected = state.selected.size;
     const checked = checkedFingerprints().length;
     const hidden = state.lastHiddenCount;

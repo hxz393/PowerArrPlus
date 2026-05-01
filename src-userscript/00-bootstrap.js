@@ -29,6 +29,7 @@
     lastNativeSelectionKey: "",
     lastNativeSelectionAt: 0,
     searchReplay: null,
+    searchInFlight: false,
     releaseByTitleKey: new Map(),
     customFilters: [],
     customFiltersLoadedAt: 0,
